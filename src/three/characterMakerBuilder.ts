@@ -9,6 +9,7 @@ import type {
   CharacterEyebrowSideConfig,
   CharacterEyeSculptConfig,
   CharacterEyeSideConfig,
+  CharacterFacialHairConfig,
   CharacterHairDetailStyle,
   CharacterHairLayoutMode,
   CharacterHairSculptConfig,
@@ -31,6 +32,10 @@ import type {
   CharacterTeethStyle,
 } from '../types/maker';
 import { getSavedCharacterSpeciesDefault } from '../utils/defaultCharacterPresets';
+import {
+  buildFacialHairGroup,
+  resolveFacialHairConfig,
+} from './facialHairBuilder';
 import {
   polygonizeSdfToGeometry,
   SdfFieldEvaluator,
@@ -390,6 +395,7 @@ export interface ResolvedCharacterExtras {
   eyeSideConfig: CharacterEyeSculptConfig;
   eyebrowSideConfig: CharacterEyebrowSculptConfig;
   mouthSideConfig: CharacterMouthSculptConfig;
+  facialHair: CharacterFacialHairConfig;
 }
 
 export function createDefaultHairSideConfig(
@@ -1057,6 +1063,7 @@ export function resolveCharacterExtras(doc: CharacterMakerDoc): ResolvedCharacte
       const right = u.mirrorSides ? { ...left } : { ...baseSide, ...(u.right ?? {}) };
       return { mirrorSides: u.mirrorSides, left, right };
     })(),
+    facialHair: resolveFacialHairConfig(doc),
   };
 }
 
@@ -7179,16 +7186,21 @@ export function buildCharacterRigAndMesh(
   }
 
   // Shapeable Nose (when noseStyle !== 'none')
+  const noseAnchorY =
+    (hasMuzzle ? muzzleEndPt.y + muzzleCfg.segments[4].ry * 0.25 : headCenterY - 0.015) +
+    ext.noseOffsetY;
+  const noseAnchorZ =
+    (hasMuzzle ? muzzleEndPt.z + tipSkinPad : baseHeadDepthZ + 0.14) + ext.noseOffsetZ;
+  const noseRayOrigin = new THREE.Vector3(0, noseAnchorY, noseAnchorZ);
+  const noseProj = evaluator.projectPointToSurface(
+    noseRayOrigin,
+    new THREE.Vector3(0, 0.06, 1).normalize(),
+    20
+  );
   if (ext.noseStyle !== 'none') {
     const noseGroup = buildNoseGroup(ext);
-    const noseAnchorY =
-      (hasMuzzle ? muzzleEndPt.y + muzzleCfg.segments[4].ry * 0.25 : headCenterY - 0.015) +
-      ext.noseOffsetY;
-    const noseAnchorZ =
-      (hasMuzzle ? muzzleEndPt.z + tipSkinPad : baseHeadDepthZ + 0.14) + ext.noseOffsetZ;
-    const rayOrigin = new THREE.Vector3(0, noseAnchorY, noseAnchorZ);
     const bias = ext.noseStyle === 'flatButton' ? 0.004 : -0.002;
-    attachToHeadSurface(rayOrigin, new THREE.Vector3(0, 0.06, 1).normalize(), noseGroup, bias, 0.55);
+    placeSurfaceHit(noseProj, noseGroup, bias, 0.55);
   }
 
   // Separate Movable Surface-Hugging Nostrils (Horses, Moose, Dragons, Lizards)
@@ -7249,6 +7261,55 @@ export function buildCharacterRigAndMesh(
   // Mouth (Closed curves with rounded ends OR Open inset black cavity with tongue & teeth + Left/Right/Both controls)
   const leftMouth = ext.mouthSideConfig.left;
   const rightMouth = ext.mouthSideConfig.right;
+  const mouthFallbackProj =
+    cachedMouthSurfHit ??
+    evaluator.projectPointToSurface(
+      new THREE.Vector3(0, mouthAnchorY, mouthAnchorZ + tipSkinPad),
+      new THREE.Vector3(0, -0.08, 1).normalize(),
+      20
+    );
+  const activeMouthCountPre = (leftMouth.enabled ? 1 : 0) + (rightMouth.enabled ? 1 : 0);
+  const mouthCenterAvgOffsetY =
+    activeMouthCountPre === 2
+      ? (leftMouth.offsetY + rightMouth.offsetY) * 0.5
+      : leftMouth.enabled
+        ? leftMouth.offsetY
+        : rightMouth.enabled
+          ? rightMouth.offsetY
+          : ext.mouthOffsetY;
+  const mouthCenterAvgOffsetZ =
+    activeMouthCountPre === 2
+      ? (leftMouth.offsetZ + rightMouth.offsetZ) * 0.5
+      : leftMouth.enabled
+        ? leftMouth.offsetZ
+        : rightMouth.enabled
+          ? rightMouth.offsetZ
+          : ext.mouthOffsetZ;
+  const mouthCenterAvgTiltDeg =
+    activeMouthCountPre === 2
+      ? (leftMouth.tiltDeg + rightMouth.tiltDeg) * 0.5
+      : leftMouth.enabled
+        ? leftMouth.tiltDeg
+        : rightMouth.enabled
+          ? rightMouth.tiltDeg
+          : ext.mouthTiltDeg;
+  const mouthAvgWidth =
+    activeMouthCountPre === 2
+      ? (leftMouth.widthScale + rightMouth.widthScale) * 0.5
+      : leftMouth.enabled
+        ? leftMouth.widthScale
+        : rightMouth.enabled
+          ? rightMouth.widthScale
+          : ext.mouthWidthScale;
+  const mouthAvgSize =
+    activeMouthCountPre === 2
+      ? (leftMouth.size + rightMouth.size) * 0.5
+      : leftMouth.enabled
+        ? leftMouth.size
+        : rightMouth.enabled
+          ? rightMouth.size
+          : doc.mouthSize;
+
   if (doc.mouthStyle !== 'none' && doc.mouthStyle !== 'beak' && (leftMouth.enabled || rightMouth.enabled)) {
     const activeMouthCount = (leftMouth.enabled ? 1 : 0) + (rightMouth.enabled ? 1 : 0);
     const ms =
@@ -7402,6 +7463,83 @@ export function buildCharacterRigAndMesh(
         0.003 + avgOffsetZ,
         0.14
       );
+    }
+  }
+
+  // 5a-2. Beard, Mustache, Sideburns & Painted-On Stubble (conformed to head size, nose & mouth)
+  {
+    const probeSideHit = headSdf.projectOutwardFromInterior(
+      headPos,
+      new THREE.Vector3(1, 0, 0),
+      0.85
+    );
+    const probeFrontHit = headSdf.projectOutwardFromInterior(
+      headPos,
+      new THREE.Vector3(0, 0, 1),
+      0.85
+    );
+    const measuredHeadRx = Math.max(
+      0.08,
+      probeSideHit ? Math.abs(probeSideHit.point.x - headPos.x) : doc.head.midRadius * (doc.head.squashX ?? 1)
+    );
+    const measuredHeadRz = Math.max(
+      0.08,
+      probeFrontHit ? Math.abs(probeFrontHit.point.z - headPos.z) : doc.head.midRadius * (doc.head.squashZ ?? 1.04)
+    );
+    const measuredHeadRy = Math.max(
+      measuredHeadRx * 0.72,
+      (effectiveHeadTopY - Math.min(headBotY, jawEndY)) * 0.5
+    );
+
+    const hairTempleWorldY = headPos.y + ext.hairOffsetY + 0.02;
+    const facialHairGroup = buildFacialHairGroup(doc, ext.facialHair, {
+      evaluator,
+      headBone: headB.bone,
+      headPos: headPos.clone(),
+      headBotY,
+      headTopY: effectiveHeadTopY,
+      headRadiusX: measuredHeadRx,
+      headRadiusY: measuredHeadRy,
+      headRadiusZ: measuredHeadRz,
+      jawEndY,
+      jawEndZ,
+      hasMuzzle,
+      muzzleStartPt: muzzleStartPt.clone(),
+      muzzleEndPt: muzzleEndPt.clone(),
+      muzzleDir: muzzleDir.clone(),
+      muzzleWidth: hasMuzzle ? muzzleCfg.segments[4].rx : measuredHeadRx * 0.45,
+      muzzleHeight: hasMuzzle ? muzzleCfg.segments[4].ry : measuredHeadRy * 0.35,
+      noseSurfacePt: noseProj.point.clone(),
+      noseRadiusX:
+        ext.noseStyle === 'none'
+          ? 0.011 * (measuredHeadRx / 0.19)
+          : Math.max(0.01, ext.noseSize * ext.noseScaleX * 1.05),
+      noseRadiusY:
+        ext.noseStyle === 'none'
+          ? 0.01 * (measuredHeadRx / 0.19)
+          : Math.max(0.01, ext.noseSize * ext.noseScaleY * 1.05),
+      mouthSurfacePt: mouthFallbackProj.point.clone().addScaledVector(mouthFallbackProj.normal, mouthCenterAvgOffsetZ),
+      mouthHalfWidth:
+        doc.mouthStyle === 'none'
+          ? 0.032 * (measuredHeadRx / 0.19)
+          : 0.048 * mouthAvgSize * mouthAvgWidth,
+      mouthHalfHeight:
+        doc.mouthStyle === 'none'
+          ? 0.01 * (measuredHeadRx / 0.19)
+          : isOpenMouth
+            ? 0.032 * mouthAvgSize * ext.mouthOpenAmount
+            : 0.014 * mouthAvgSize,
+      mouthTiltRad: THREE.MathUtils.degToRad(mouthCenterAvgTiltDeg),
+      leftMouthOffsetY: leftMouth.offsetY - mouthCenterAvgOffsetY,
+      rightMouthOffsetY: rightMouth.offsetY - mouthCenterAvgOffsetY,
+      isOpenMouth,
+      hairActive: doc.hairStyle !== 'none',
+      hairTempleY: hairTempleWorldY,
+      hairSideOffsetX: ext.hairOffsetX,
+      skinColorHex: doc.head.color,
+    });
+    if (facialHairGroup) {
+      headB.bone.add(facialHairGroup);
     }
   }
 

@@ -48,6 +48,17 @@ import {
   type BuiltCharacterAsset,
 } from '../../three/characterMakerBuilder';
 import {
+  BEARD_STYLE_OPTIONS,
+  createBeardPresetConfig,
+  createDefaultFacialHairConfig,
+  createMustachePresetConfig,
+  createSideburnsPresetConfig,
+  FACIAL_HAIR_COMBO_PRESETS,
+  MUSTACHE_STYLE_OPTIONS,
+  SIDEBURNS_STYLE_OPTIONS,
+  STUBBLE_STYLE_OPTIONS,
+} from '../../three/facialHairBuilder';
+import {
   createCharacterSegmentOverlay,
   type CharacterSegmentOverlayController,
 } from '../../three/characterSegmentOverlay';
@@ -77,6 +88,8 @@ import { VertexPaintInspector } from './VertexPaintInspector';
 import type {
   CharacterAddonConfig,
   CharacterBeakStyle,
+  CharacterBeardConfig,
+  CharacterBeardStyle,
   CharacterBodyGearStyle,
   CharacterBodyPartKey,
   CharacterEarStyle,
@@ -87,6 +100,7 @@ import type {
   CharacterEyeSculptConfig,
   CharacterEyeSideConfig,
   CharacterEyewearStyle,
+  CharacterFacialHairConfig,
   CharacterFootStyle,
   CharacterHairDetailStyle,
   CharacterHairLayoutMode,
@@ -103,15 +117,22 @@ import type {
   CharacterMouthSculptConfig,
   CharacterMouthSideConfig,
   CharacterMouthStyle,
+  CharacterMustacheConfig,
+  CharacterMustacheSideConfig,
+  CharacterMustacheStyle,
   CharacterMuzzleConfig,
   CharacterMuzzlePresetId,
   CharacterMuzzleSegment,
   CharacterNoseStyle,
   CharacterNostrilStyle,
   CharacterPresetId,
+  CharacterSideburnsConfig,
+  CharacterSideburnsStyle,
   CharacterSpikesConfig,
   CharacterSpikesStyle,
   CharacterSpikesZone,
+  CharacterStubbleConfig,
+  CharacterStubbleStyle,
   CharacterSurfaceCoatConfig,
   CharacterSurfaceCoatMode,
   CharacterTailStyle,
@@ -554,6 +575,8 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('body');
   const customHairPresets = useCustomHairPresets();
   const [hairEditSide, setHairEditSide] = useState<'both' | 'left' | 'right'>('both');
+  const [facialHairSubTab, setFacialHairSubTab] = useState<'mustache' | 'beard' | 'sideburns' | 'stubble'>('mustache');
+  const [mustacheEditSide, setMustacheEditSide] = useState<'both' | 'left' | 'right'>('both');
   const [eyeEditSide, setEyeEditSide] = useState<'both' | 'left' | 'right'>('both');
   const [eyebrowEditSide, setEyebrowEditSide] = useState<'both' | 'left' | 'right'>('both');
   const [mouthEditSide, setMouthEditSide] = useState<'both' | 'left' | 'right'>('both');
@@ -622,6 +645,7 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
       setRedoStack([]);
       setShowLoadMenu(false);
       setHairEditSide('both');
+      setMustacheEditSide('both');
       setEyeEditSide('both');
       setEyebrowEditSide('both');
       setMouthEditSide('both');
@@ -694,6 +718,7 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
     const next = createCharacterPresetDoc(presetId);
     const wasCustomized = hasSavedCharacterSpeciesDefault(presetId);
     setHairEditSide('both');
+    setMustacheEditSide('both');
     setEyeEditSide('both');
     setEyebrowEditSide('both');
     setMouthEditSide('both');
@@ -3141,6 +3166,80 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                   );
 
                 const activeSideCfg = hairEditSide === 'right' ? hairCfg.right : hairCfg.left;
+                const fh: CharacterFacialHairConfig = ext.facialHair;
+                const patchFacialHair = (
+                  updater: (prev: CharacterFacialHairConfig, d: CharacterMakerDoc) => CharacterFacialHairConfig,
+                  record = false
+                ) =>
+                  updateDoc((d) => {
+                    const prev = resolveCharacterExtras(d).facialHair;
+                    return { ...d, facialHair: updater(prev, d) };
+                  }, record);
+                const patchMustache = (
+                  patch: Partial<CharacterMustacheConfig>,
+                  record = false
+                ) =>
+                  patchFacialHair((prev) => {
+                    const next: CharacterMustacheConfig = { ...prev.mustache, ...patch };
+                    if (patch.mirrorSides === true) {
+                      const src = mustacheEditSide === 'right' ? prev.mustache.right : prev.mustache.left;
+                      next.left = { ...src };
+                      next.right = { ...src };
+                    }
+                    return { ...prev, mustache: next };
+                  }, record);
+                const patchMustacheSide = (
+                  patch: Partial<CharacterMustacheSideConfig>,
+                  record = false
+                ) =>
+                  patchFacialHair((prev) => {
+                    if (mustacheEditSide === 'both') {
+                      return {
+                        ...prev,
+                        mustache: {
+                          ...prev.mustache,
+                          mirrorSides: true,
+                          left: { ...prev.mustache.left, ...patch },
+                          right: { ...prev.mustache.right, ...patch },
+                        },
+                      };
+                    }
+                    if (mustacheEditSide === 'left') {
+                      return {
+                        ...prev,
+                        mustache: {
+                          ...prev.mustache,
+                          mirrorSides: false,
+                          left: { ...prev.mustache.left, ...patch },
+                        },
+                      };
+                    }
+                    return {
+                      ...prev,
+                      mustache: {
+                        ...prev.mustache,
+                        mirrorSides: false,
+                        right: { ...prev.mustache.right, ...patch },
+                      },
+                    };
+                  }, record);
+                const patchBeard = (patch: Partial<CharacterBeardConfig>, record = false) =>
+                  patchFacialHair((prev) => ({ ...prev, beard: { ...prev.beard, ...patch } }), record);
+                const patchSideburns = (
+                  patch: Partial<CharacterSideburnsConfig>,
+                  record = false
+                ) =>
+                  patchFacialHair(
+                    (prev) => ({ ...prev, sideburns: { ...prev.sideburns, ...patch } }),
+                    record
+                  );
+                const patchStubble = (patch: Partial<CharacterStubbleConfig>, record = false) =>
+                  patchFacialHair(
+                    (prev) => ({ ...prev, stubble: { ...prev.stubble, ...patch } }),
+                    record
+                  );
+                const activeMustacheSide =
+                  mustacheEditSide === 'right' ? fh.mustache.right : fh.mustache.left;
                 const maleHair = HAIR_OPTIONS.filter((h) => h.group === 'male');
                 const femaleHair = HAIR_OPTIONS.filter((h) => h.group === 'female');
                 const creatureHair = HAIR_OPTIONS.filter((h) => h.group === 'creature');
@@ -3766,6 +3865,607 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                             )}
                           </div>
                         </>
+                      )}
+                    </div>
+
+                    {/* 1b. Beard, Mustache, Sideburns & Stubble Studio */}
+                    <div className="p-3 rounded-2xl bg-slate-100/80 dark:bg-[#1B1F2E] space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <div className="text-xs font-extrabold">Beard, Mustache &amp; Stubble</div>
+                          <div className="text-[10px] text-slate-500 dark:text-[#8D95AA]">
+                            Soft layered strands, independent mustache sides &amp; conformal painted stubble
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMustacheEditSide('both');
+                            updateDoc(
+                              (d) => ({
+                                ...d,
+                                facialHair: createDefaultFacialHairConfig(d.hairColor || '#5C3A21'),
+                              }),
+                              true
+                            );
+                          }}
+                          className="px-2 py-1 rounded-lg text-[10px] font-bold bg-white/80 dark:bg-[#141722] border border-slate-200/70 dark:border-white/[0.08] hover:border-[#7C5CFF]"
+                        >
+                          Clear All
+                        </button>
+                      </div>
+
+                      {/* Quick Combo Presets */}
+                      <div>
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-[#8D95AA] mb-1">
+                          Quick Styles
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {FACIAL_HAIR_COMBO_PRESETS.map((cp) => (
+                            <button
+                              key={cp.id}
+                              type="button"
+                              onClick={() => {
+                                setMustacheEditSide('both');
+                                patchFacialHair((prev, d) => {
+                                  const applied = cp.apply(prev.color || d.hairColor || '#5C3A21');
+                                  return {
+                                    ...prev,
+                                    ...applied,
+                                  };
+                                }, true);
+                              }}
+                              className="px-2 py-1 rounded-lg text-[10px] font-bold bg-white dark:bg-[#141722] border border-slate-200/70 dark:border-white/[0.08] hover:border-[#7C5CFF] hover:text-[#7C5CFF]"
+                            >
+                              {cp.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Shared Color & Global Face Depth Offset */}
+                      <div className="space-y-2 pt-2 border-t border-slate-200/70 dark:border-white/[0.06]">
+                        <label className="flex items-center gap-2 text-[11px] font-bold text-slate-700 dark:text-slate-200 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={fh.matchHairColor}
+                            onChange={(e) =>
+                              patchFacialHair(
+                                (prev, d) => ({
+                                  ...prev,
+                                  matchHairColor: e.target.checked,
+                                  color: e.target.checked ? d.hairColor || prev.color : prev.color,
+                                }),
+                                true
+                              )
+                            }
+                            className="accent-[#7C5CFF]"
+                          />
+                          <span>Match Head Hair Color</span>
+                        </label>
+                        {!fh.matchHairColor &&
+                          renderColorRow('Facial Hair Color', fh.color, (hex) =>
+                            patchFacialHair((prev) => ({ ...prev, color: hex }))
+                          )}
+                        {renderColorRow('Accent / Tip Highlight', fh.accentColor, (hex) =>
+                          patchFacialHair((prev) => ({ ...prev, accentColor: hex }))
+                        )}
+                        {renderSliderRow(
+                          'Face Depth (Embed ↔ Offset)',
+                          fh.depthOffset,
+                          -0.035,
+                          0.045,
+                          0.002,
+                          (val) => patchFacialHair((prev) => ({ ...prev, depthOffset: val })),
+                          'm'
+                        )}
+                      </div>
+
+                      {/* 4 Sub-tabs: Mustache / Beard / Sideburns / Stubble */}
+                      <div className="grid grid-cols-4 gap-1 p-1 rounded-xl bg-white/80 dark:bg-[#141722] border border-slate-200/70 dark:border-white/[0.07]">
+                        {(
+                          [
+                            { id: 'mustache', label: 'Mustache' },
+                            { id: 'beard', label: 'Beard' },
+                            { id: 'sideburns', label: 'Sideburns' },
+                            { id: 'stubble', label: 'Stubble' },
+                          ] as const
+                        ).map((t) => (
+                          <button
+                            key={t.id}
+                            type="button"
+                            onClick={() => setFacialHairSubTab(t.id)}
+                            className={`py-1.5 px-1 rounded-lg text-[10px] font-extrabold transition ${
+                              facialHairSubTab === t.id
+                                ? 'bg-[#7C5CFF] text-white'
+                                : 'text-slate-600 dark:text-[#A8B0C4] hover:text-slate-900 dark:hover:text-white'
+                            }`}
+                          >
+                            {t.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {/* Sub-tab 1: Mustache */}
+                      {facialHairSubTab === 'mustache' && (
+                        <div className="space-y-2.5">
+                          <div>
+                            <div className="text-[10px] font-bold text-slate-600 dark:text-[#A8B0C4] mb-1">
+                              Mustache Style (Thin → Handlebar → Bushy)
+                            </div>
+                            <select
+                              aria-label="Mustache style"
+                              value={fh.mustache.style}
+                              onChange={(e) => {
+                                const style = e.target.value as CharacterMustacheStyle;
+                                const nextM = createMustachePresetConfig(style);
+                                setMustacheEditSide(nextM.mirrorSides ? 'both' : 'left');
+                                patchFacialHair((prev) => ({ ...prev, mustache: nextM }), true);
+                              }}
+                              className="w-full px-2.5 py-2 rounded-xl text-xs font-bold bg-white dark:bg-[#141722] border border-slate-200/80 dark:border-white/[0.1] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#7C5CFF]/40"
+                            >
+                              {MUSTACHE_STYLE_OPTIONS.map((opt) => (
+                                <option key={opt.id} value={opt.id}>
+                                  {opt.label} — {opt.desc}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {fh.mustache.style !== 'none' && (
+                            <>
+                              <div className="p-2 rounded-xl bg-white/75 dark:bg-[#141722]/90 border border-slate-200/70 dark:border-white/[0.06] space-y-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 dark:text-[#8D95AA]">
+                                    Mustache Side Control
+                                  </span>
+                                  <label className="flex items-center gap-1.5 text-[10px] font-bold cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={fh.mustache.mirrorSides}
+                                      onChange={(e) => {
+                                        const checked = e.target.checked;
+                                        patchMustache({ mirrorSides: checked }, true);
+                                        if (checked) setMustacheEditSide('both');
+                                        else if (mustacheEditSide === 'both') setMustacheEditSide('left');
+                                      }}
+                                      className="accent-[#7C5CFF]"
+                                    />
+                                    <span>Mirror Sides</span>
+                                  </label>
+                                </div>
+                                <div className="grid grid-cols-3 gap-1">
+                                  {(['both', 'left', 'right'] as const).map((side) => (
+                                    <button
+                                      key={side}
+                                      type="button"
+                                      onClick={() => {
+                                        setMustacheEditSide(side);
+                                        if (side === 'both') patchMustache({ mirrorSides: true }, true);
+                                        else patchMustache({ mirrorSides: false }, true);
+                                      }}
+                                      className={`py-1 px-2 rounded-lg text-[10px] font-extrabold border ${
+                                        mustacheEditSide === side
+                                          ? 'bg-[#7C5CFF] text-white border-[#7C5CFF]'
+                                          : 'bg-white dark:bg-[#1B1F2E] border-slate-200/70 dark:border-white/[0.07]'
+                                      }`}
+                                    >
+                                      {side === 'both'
+                                        ? 'Both Sides'
+                                        : side === 'left'
+                                          ? 'Left Side'
+                                          : 'Right Side'}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+
+                              <label className="flex items-center gap-2 text-[11px] font-bold cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={activeMustacheSide.enabled}
+                                  onChange={(e) =>
+                                    patchMustacheSide({ enabled: e.target.checked }, true)
+                                  }
+                                  className="accent-[#7C5CFF]"
+                                />
+                                <span>
+                                  Show{' '}
+                                  {mustacheEditSide === 'both'
+                                    ? 'Mustache'
+                                    : mustacheEditSide === 'left'
+                                      ? 'Left Side'
+                                      : 'Right Side'}
+                                </span>
+                              </label>
+
+                              {activeMustacheSide.enabled && (
+                                <div className="space-y-2 pt-1">
+                                  {renderSliderRow(
+                                    'Thickness (Thin ↔ Thick)',
+                                    activeMustacheSide.thickness,
+                                    0.25,
+                                    2.2,
+                                    0.04,
+                                    (val) => patchMustacheSide({ thickness: val })
+                                  )}
+                                  {renderSliderRow(
+                                    'Length / Span',
+                                    activeMustacheSide.length,
+                                    0.3,
+                                    2.2,
+                                    0.04,
+                                    (val) => patchMustacheSide({ length: val })
+                                  )}
+                                  {renderSliderRow(
+                                    'Tip Curve (Droop ↔ Handlebar)',
+                                    activeMustacheSide.curl,
+                                    -1.2,
+                                    1.8,
+                                    0.05,
+                                    (val) => patchMustacheSide({ curl: val })
+                                  )}
+                                  {renderSliderRow(
+                                    'Bushiness (Soft Strands)',
+                                    activeMustacheSide.bushiness,
+                                    0,
+                                    1,
+                                    0.04,
+                                    (val) => patchMustacheSide({ bushiness: val })
+                                  )}
+                                  {renderSliderRow(
+                                    'Angle / Sweep',
+                                    activeMustacheSide.angleDeg,
+                                    -45,
+                                    45,
+                                    1,
+                                    (val) => patchMustacheSide({ angleDeg: val }),
+                                    '°'
+                                  )}
+                                  {renderSliderRow(
+                                    'Scale',
+                                    activeMustacheSide.scale,
+                                    0.4,
+                                    1.8,
+                                    0.04,
+                                    (val) => patchMustacheSide({ scale: val }),
+                                    '×'
+                                  )}
+                                  {renderSliderRow(
+                                    'Center Gap / X Offset',
+                                    activeMustacheSide.offsetX,
+                                    -0.03,
+                                    0.06,
+                                    0.002,
+                                    (val) => patchMustacheSide({ offsetX: val }),
+                                    'm'
+                                  )}
+                                  {renderSliderRow(
+                                    'Height Y Offset',
+                                    activeMustacheSide.offsetY,
+                                    -0.05,
+                                    0.05,
+                                    0.002,
+                                    (val) => patchMustacheSide({ offsetY: val }),
+                                    'm'
+                                  )}
+                                  {renderSliderRow(
+                                    'Side Depth Z (In ↔ Out)',
+                                    activeMustacheSide.offsetZ,
+                                    -0.035,
+                                    0.045,
+                                    0.002,
+                                    (val) => patchMustacheSide({ offsetZ: val }),
+                                    'm'
+                                  )}
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Sub-tab 2: Beard */}
+                      {facialHairSubTab === 'beard' && (
+                        <div className="space-y-2.5">
+                          <div>
+                            <div className="text-[10px] font-bold text-slate-600 dark:text-[#A8B0C4] mb-1">
+                              Beard Style (Layered Soft Strands)
+                            </div>
+                            <select
+                              aria-label="Beard style"
+                              value={fh.beard.style}
+                              onChange={(e) => {
+                                const style = e.target.value as CharacterBeardStyle;
+                                patchFacialHair(
+                                  (prev) => ({ ...prev, beard: createBeardPresetConfig(style) }),
+                                  true
+                                );
+                              }}
+                              className="w-full px-2.5 py-2 rounded-xl text-xs font-bold bg-white dark:bg-[#141722] border border-slate-200/80 dark:border-white/[0.1] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#7C5CFF]/40"
+                            >
+                              {BEARD_STYLE_OPTIONS.map((opt) => (
+                                <option key={opt.id} value={opt.id}>
+                                  {opt.label} — {opt.desc}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {fh.beard.style !== 'none' && (
+                            <div className="space-y-2 pt-1">
+                              {renderSliderRow(
+                                'Beard Length',
+                                fh.beard.length,
+                                0.25,
+                                2.2,
+                                0.04,
+                                (val) => patchBeard({ length: val })
+                              )}
+                              {renderSliderRow(
+                                'Strand Thickness',
+                                fh.beard.thickness,
+                                0.35,
+                                2.0,
+                                0.04,
+                                (val) => patchBeard({ thickness: val })
+                              )}
+                              {renderSliderRow(
+                                'Bushiness (Strand Layers)',
+                                fh.beard.bushiness,
+                                0,
+                                1,
+                                0.04,
+                                (val) => patchBeard({ bushiness: val })
+                              )}
+                              {renderSliderRow(
+                                'Jaw / Cheek Width',
+                                fh.beard.width,
+                                0.4,
+                                1.8,
+                                0.04,
+                                (val) => patchBeard({ width: val })
+                              )}
+                              {renderSliderRow(
+                                'Curl / Wave',
+                                fh.beard.curl,
+                                0,
+                                1.1,
+                                0.04,
+                                (val) => patchBeard({ curl: val })
+                              )}
+                              {renderSliderRow(
+                                'Taper (Broad ↔ Pointed)',
+                                fh.beard.taper,
+                                -1,
+                                1,
+                                0.05,
+                                (val) => patchBeard({ taper: val })
+                              )}
+                              {renderSliderRow(
+                                'Cheek Line Height',
+                                fh.beard.cheekHeight,
+                                0,
+                                1,
+                                0.04,
+                                (val) => patchBeard({ cheekHeight: val })
+                              )}
+                              {renderSliderRow(
+                                'Beard Depth (In ↔ Out)',
+                                fh.beard.depthOffset,
+                                -0.035,
+                                0.045,
+                                0.002,
+                                (val) => patchBeard({ depthOffset: val }),
+                                'm'
+                              )}
+                              {renderSliderRow(
+                                'Offset Up / Down (Y)',
+                                fh.beard.offsetY,
+                                -0.05,
+                                0.05,
+                                0.002,
+                                (val) => patchBeard({ offsetY: val }),
+                                'm'
+                              )}
+                              {renderSliderRow(
+                                'Offset Front / Back (Z)',
+                                fh.beard.offsetZ,
+                                -0.04,
+                                0.04,
+                                0.002,
+                                (val) => patchBeard({ offsetZ: val }),
+                                'm'
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Sub-tab 3: Sideburns */}
+                      {facialHairSubTab === 'sideburns' && (
+                        <div className="space-y-2.5">
+                          <div>
+                            <div className="text-[10px] font-bold text-slate-600 dark:text-[#A8B0C4] mb-1">
+                              Sideburns Style
+                            </div>
+                            <select
+                              aria-label="Sideburns style"
+                              value={fh.sideburns.style}
+                              onChange={(e) => {
+                                const style = e.target.value as CharacterSideburnsStyle;
+                                patchFacialHair(
+                                  (prev) => ({
+                                    ...prev,
+                                    sideburns: createSideburnsPresetConfig(style),
+                                  }),
+                                  true
+                                );
+                              }}
+                              className="w-full px-2.5 py-2 rounded-xl text-xs font-bold bg-white dark:bg-[#141722] border border-slate-200/80 dark:border-white/[0.1] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#7C5CFF]/40"
+                            >
+                              {SIDEBURNS_STYLE_OPTIONS.map((opt) => (
+                                <option key={opt.id} value={opt.id}>
+                                  {opt.label} — {opt.desc}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {fh.sideburns.style !== 'none' && (
+                            <div className="space-y-2 pt-1">
+                              <div className="grid grid-cols-1 gap-1.5 p-2 rounded-xl bg-white/75 dark:bg-[#141722]/90 border border-slate-200/70 dark:border-white/[0.06]">
+                                <label className="flex items-center gap-2 text-[11px] font-bold cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={fh.sideburns.connectToHair}
+                                    onChange={(e) =>
+                                      patchSideburns({ connectToHair: e.target.checked }, true)
+                                    }
+                                    className="accent-[#7C5CFF]"
+                                  />
+                                  <span>Connect Up to Head Hair</span>
+                                </label>
+                                <label className="flex items-center gap-2 text-[11px] font-bold cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={fh.sideburns.connectToBeard}
+                                    onChange={(e) =>
+                                      patchSideburns({ connectToBeard: e.target.checked }, true)
+                                    }
+                                    className="accent-[#7C5CFF]"
+                                  />
+                                  <span>Connect Down into Beard</span>
+                                </label>
+                              </div>
+                              {renderSliderRow(
+                                'Length',
+                                fh.sideburns.length,
+                                0.25,
+                                1.7,
+                                0.04,
+                                (val) => patchSideburns({ length: val })
+                              )}
+                              {renderSliderRow(
+                                'Width',
+                                fh.sideburns.width,
+                                0.3,
+                                2.0,
+                                0.04,
+                                (val) => patchSideburns({ width: val })
+                              )}
+                              {renderSliderRow(
+                                'Thickness',
+                                fh.sideburns.thickness,
+                                0.35,
+                                2.0,
+                                0.04,
+                                (val) => patchSideburns({ thickness: val })
+                              )}
+                              {renderSliderRow(
+                                'Flare (Tapered ↔ Mutton Chops)',
+                                fh.sideburns.flare,
+                                -0.4,
+                                1.0,
+                                0.04,
+                                (val) => patchSideburns({ flare: val })
+                              )}
+                              {renderSliderRow(
+                                'Sideburns Depth (In ↔ Out)',
+                                fh.sideburns.depthOffset,
+                                -0.035,
+                                0.045,
+                                0.002,
+                                (val) => patchSideburns({ depthOffset: val }),
+                                'm'
+                              )}
+                              {renderSliderRow(
+                                'Offset Up / Down (Y)',
+                                fh.sideburns.offsetY,
+                                -0.04,
+                                0.04,
+                                0.002,
+                                (val) => patchSideburns({ offsetY: val }),
+                                'm'
+                              )}
+                              {renderSliderRow(
+                                'Offset Front / Back (Z)',
+                                fh.sideburns.offsetZ,
+                                -0.04,
+                                0.04,
+                                0.002,
+                                (val) => patchSideburns({ offsetZ: val }),
+                                'm'
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Sub-tab 4: Painted / Sticker Stubble */}
+                      {facialHairSubTab === 'stubble' && (
+                        <div className="space-y-2.5">
+                          <div className="text-[10px] text-slate-500 dark:text-[#8D95AA]">
+                            Zero-mesh-depth skin shading that conforms to head size, nose &amp; mouth placement.
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            {STUBBLE_STYLE_OPTIONS.map((opt) => (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                onClick={() => patchStubble({ style: opt.id }, true)}
+                                title={opt.desc}
+                                className={`py-1.5 px-2 rounded-xl text-[10px] font-bold border text-left truncate ${
+                                  fh.stubble.style === opt.id
+                                    ? 'bg-[#7C5CFF] text-white border-[#7C5CFF]'
+                                    : 'bg-white dark:bg-[#141722] border-slate-200/70 dark:border-white/[0.07]'
+                                }`}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
+                          </div>
+
+                          {fh.stubble.style !== 'none' && (
+                            <div className="space-y-2 pt-1">
+                              {renderSliderRow(
+                                'Stubble Opacity',
+                                fh.stubble.opacity,
+                                0,
+                                1,
+                                0.02,
+                                (val) => patchStubble({ opacity: val })
+                              )}
+                              {renderSliderRow(
+                                'Follicle Density',
+                                fh.stubble.density,
+                                0.15,
+                                1,
+                                0.03,
+                                (val) => patchStubble({ density: val })
+                              )}
+                              {renderSliderRow(
+                                'Edge Softness',
+                                fh.stubble.softness,
+                                0.1,
+                                1,
+                                0.03,
+                                (val) => patchStubble({ softness: val })
+                              )}
+                              {renderSliderRow(
+                                'Cheek Height',
+                                fh.stubble.cheekHeight,
+                                0,
+                                1,
+                                0.03,
+                                (val) => patchStubble({ cheekHeight: val })
+                              )}
+                              {renderColorRow('Stubble Tint', fh.stubble.color, (hex) =>
+                                patchStubble({ color: hex })
+                              )}
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
 

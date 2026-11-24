@@ -2902,6 +2902,8 @@ export interface CharacterMakerDoc {
   buckTeethTopWidth?: number;
   buckTeethBottomWidth?: number;
   vertexPaintStrokes?: VertexPaintStroke[];
+  /** Beard, Mustache, Sideburns & Painted-On Stubble configuration */
+  facialHair?: CharacterFacialHairConfig;
 }
 
 export interface CharacterEyeSideConfig {
@@ -2963,4 +2965,156 @@ export interface CharacterMouthSculptConfig {
   left: CharacterMouthSideConfig;
   right: CharacterMouthSideConfig;
 }
+
+export type CharacterMustacheStyle =
+  | 'none'
+  | 'pencil'
+  | 'classicStraight'
+  | 'chevron'
+  | 'handlebar'
+  | 'imperial'
+  | 'dali'
+  | 'walrus'
+  | 'bushyBrush'
+  | 'horseshoe'
+  | 'fuManchu'
+  | 'toothbrush';
+
+export interface CharacterMustacheSideConfig {
+  enabled: boolean;
+  /** Strand thickness multiplier (0.25 = ultra-thin pencil .. 2.2 = thick bushy) */
+  thickness: number;
+  /** Outward span / wing length (0.3 .. 2.2) */
+  length: number;
+  /** Tip curvature (-1.2 = drooping .. 0 = straight .. +1.8 = handlebar curl up) */
+  curl: number;
+  /** Layered strand density & fluffiness (0 = sleek single sweep .. 1 = lush multi-layer bushy) */
+  bushiness: number;
+  /** Pitch/droop angle in degrees (-45 .. +45) */
+  angleDeg: number;
+  /** Horizontal philtrum gap / lateral shift (-0.03 .. +0.06 m) */
+  offsetX: number;
+  /** Vertical position offset (-0.05 .. +0.05 m) */
+  offsetY: number;
+  /** Depth offset (-0.035 = embedded into face .. +0.045 = lifted off face) */
+  offsetZ: number;
+  /** Overall side scale multiplier (0.4 .. 1.8) */
+  scale: number;
+}
+
+export interface CharacterMustacheConfig {
+  style: CharacterMustacheStyle;
+  mirrorSides: boolean;
+  left: CharacterMustacheSideConfig;
+  right: CharacterMustacheSideConfig;
+}
+
+export type CharacterBeardStyle =
+  | 'none'
+  | 'soulPatch'
+  | 'goatee'
+  | 'vanDyke'
+  | 'circleBeard'
+  | 'chinStrap'
+  | 'chinCurtain'
+  | 'shortBoxed'
+  | 'fullTrimmed'
+  | 'bushyLumberjack'
+  | 'ducktail'
+  | 'wizardLong'
+  | 'vikingBraided'
+  | 'muttonChops';
+
+export interface CharacterBeardConfig {
+  style: CharacterBeardStyle;
+  /** Overall beard drape length (0.25 .. 2.2) */
+  length: number;
+  /** Strand thickness & volume (0.35 .. 2.0) */
+  thickness: number;
+  /** Multi-layer bushiness & fluffiness (0 = sleek sculpted .. 1 = wild bushy layers) */
+  bushiness: number;
+  /** Width / cheek wrap spread (0.4 .. 1.8) */
+  width: number;
+  /** Tip curl / wave (0 = straight soft drape .. 1 = curled/wavy strands) */
+  curl: number;
+  /** Pointed taper vs rounded/broad bottom (-1 = broad rounded .. +1 = tapered point) */
+  taper: number;
+  /** Cheek hairline coverage height (0 = low jawline .. 1 = high cheekbones) */
+  cheekHeight: number;
+  /** Depth offset (-0.035 = embedded into face .. +0.045 = lifted off face) */
+  depthOffset: number;
+  /** Vertical offset (-0.05 .. +0.05 m) */
+  offsetY: number;
+  /** Forward/back offset (-0.04 .. +0.04 m) */
+  offsetZ: number;
+}
+
+export type CharacterSideburnsStyle =
+  | 'none'
+  | 'shortNeat'
+  | 'pointed'
+  | 'flared'
+  | 'muttonChops'
+  | 'connectedFull';
+
+export interface CharacterSideburnsConfig {
+  style: CharacterSideburnsStyle;
+  /** Extend upper root seamlessly into the temple/hairline */
+  connectToHair: boolean;
+  /** Curve lower sweep along jawline seamlessly into beard */
+  connectToBeard: boolean;
+  /** Vertical length down cheek/jaw (0.25 .. 1.7) */
+  length: number;
+  /** Width across cheek (0.3 .. 2.0) */
+  width: number;
+  /** Strand layer thickness (0.35 .. 2.0) */
+  thickness: number;
+  /** Outward tip flare / chop bushiness (-0.4 .. +1.0) */
+  flare: number;
+  /** Depth offset (-0.035 = embedded into face .. +0.045 = lifted off face) */
+  depthOffset: number;
+  /** Vertical offset (-0.04 .. +0.04 m) */
+  offsetY: number;
+  /** Forward/back offset (-0.04 .. +0.04 m) */
+  offsetZ: number;
+}
+
+export type CharacterStubbleStyle =
+  | 'none'
+  | 'fiveOClock'
+  | 'designer'
+  | 'goatee'
+  | 'mustache'
+  | 'chinJaw'
+  | 'fullHeavy';
+
+export interface CharacterStubbleConfig {
+  style: CharacterStubbleStyle;
+  /** Painted-on skin shading opacity (0 .. 1) */
+  opacity: number;
+  /** Follicle grain / texture intensity (0 .. 1) */
+  density: number;
+  /** Softness of edge feathering (0.1 .. 1.0) */
+  softness: number;
+  /** Cheek coverage height (0 = low jaw .. 1 = high cheek) */
+  cheekHeight: number;
+  /** Custom stubble color override */
+  color: string;
+}
+
+export interface CharacterFacialHairConfig {
+  /** Base facial hair color */
+  color: string;
+  /** Optional subtle highlight/tip color */
+  accentColor: string;
+  /** Link facial hair color directly to head hairColor */
+  matchHairColor: boolean;
+  /** Global facial hair depth offset (-0.035 = embedded into face .. +0.045 = lifted off face) */
+  depthOffset: number;
+  mustache: CharacterMustacheConfig;
+  beard: CharacterBeardConfig;
+  sideburns: CharacterSideburnsConfig;
+  stubble: CharacterStubbleConfig;
+}
+
 
