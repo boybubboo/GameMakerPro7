@@ -93,6 +93,7 @@ export const CameraModes: {
   blurb: string;
 }[] = [
   { id: 'front', title: 'Front Always', blurb: 'Hero always faces forward & scene turns with you — drag to look around, auto-rights on move' },
+  { id: 'heroFront', title: 'Front View (Facing You)', blurb: 'Camera in front of your hero so you see them walk toward you with clear near foreground ahead' },
   { id: 'chase', title: 'Adventure Chase', blurb: 'Free look over-the-shoulder camera (drag sky to turn)' },
   { id: 'firstPerson', title: 'Character POV', blurb: 'First-person eye-level view from your character — drag mouse to look around' },
   { id: 'cozy', title: 'Cozy Close', blurb: 'Closer warm view framing your hero' },

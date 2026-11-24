@@ -1314,7 +1314,10 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
     carResetQueued: false,
     emoteType: '' as '' | 'wave' | 'dance',
     emoteTimer: 0,
-    cameraYaw: resolvedCamMode === 'front' || resolvedCamMode === 'sideScroll' ? 0 : 0.4,
+    cameraYaw:
+      resolvedCamMode === 'front' || resolvedCamMode === 'heroFront' || resolvedCamMode === 'sideScroll'
+        ? 0
+        : 0.4,
     lookYawOffset: 0,
     lookPitchOffset: 0,
     cameraDistance:
@@ -1326,24 +1329,28 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
         ? 14.5
         : resolvedCamMode === 'front'
         ? 9.8
+        : resolvedCamMode === 'heroFront'
+        ? 9.2
         : 8.8,
   });
 
   const toggleCharacterPov = useCallback(() => {
     if (isDrivingMode || envType === 'sideScroller') return;
     setLiveCamMode((prev) => {
+      const behindMode: CameraMode =
+        baseCamMode === 'firstPerson' || baseCamMode === 'heroFront' ? 'front' : baseCamMode;
       const next: CameraMode =
-        prev === 'firstPerson'
-          ? baseCamMode === 'firstPerson'
-            ? 'chase'
-            : baseCamMode
-          : 'firstPerson';
+        prev === 'heroFront'
+          ? 'firstPerson'
+          : prev === 'firstPerson'
+          ? behindMode
+          : 'heroFront';
       inputRef.current.lookPitchOffset = 0;
       inputRef.current.lookYawOffset = 0;
       if (next === 'firstPerson') {
         const hy = liveHeroYawRef.current;
         inputRef.current.cameraYaw = Math.atan2(-Math.sin(hy), -Math.cos(hy));
-      } else {
+      } else if (prev === 'firstPerson') {
         inputRef.current.cameraYaw = Math.atan2(
           -Math.sin(inputRef.current.cameraYaw),
           -Math.cos(inputRef.current.cameraYaw)
@@ -1352,7 +1359,9 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
       showToastGlobal(
         next === 'firstPerson'
           ? 'Camera: Character POV (First-Person)'
-          : `Camera: ${next === 'front' ? 'Front Trail' : 'Chase'} View`
+          : next === 'heroFront'
+          ? 'Camera: Front View (Walking Toward You)'
+          : `Camera: ${next === 'front' ? 'Behind Trail' : next === 'cozy' ? 'Cozy Behind' : next === 'isometric' ? 'Isometric' : 'Chase'} View`
       );
       return next;
     });
@@ -1360,7 +1369,9 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
 
   useEffect(() => {
     inputRef.current.cameraYaw =
-      baseCamMode === 'front' || baseCamMode === 'sideScroll' ? 0 : 0.4;
+      baseCamMode === 'front' || baseCamMode === 'heroFront' || baseCamMode === 'sideScroll'
+        ? 0
+        : 0.4;
     inputRef.current.lookYawOffset = 0;
     inputRef.current.lookPitchOffset = 0;
     inputRef.current.cameraDistance =
@@ -1372,6 +1383,8 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
         ? 14.5
         : baseCamMode === 'front'
         ? 9.8
+        : baseCamMode === 'heroFront'
+        ? 9.2
         : 8.8;
   }, [currentLevel?.id, baseCamMode, isDrivingMode]);
 
@@ -1717,6 +1730,8 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
     const camera = new THREE.PerspectiveCamera(
       camMode === 'firstPerson'
         ? 68
+        : camMode === 'heroFront'
+        ? 58
         : camMode === 'sideScroll'
         ? 42
         : camMode === 'cozy'
@@ -1814,6 +1829,13 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
         );
       } else if (activeMode === 'front') {
         inputRef.current.lookYawOffset -= dx * 0.007;
+        inputRef.current.lookPitchOffset = THREE.MathUtils.clamp(
+          inputRef.current.lookPitchOffset + dy * 0.025,
+          -1.2,
+          4.8
+        );
+      } else if (activeMode === 'heroFront') {
+        inputRef.current.lookYawOffset += dx * 0.007;
         inputRef.current.lookPitchOffset = THREE.MathUtils.clamp(
           inputRef.current.lookPitchOffset + dy * 0.025,
           -1.2,
@@ -2289,6 +2311,19 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
           heroX + Math.sin(heroYaw) * 1.8,
           heroY + 1.35,
           heroZ + Math.cos(heroYaw) * 1.8
+        );
+      } else if (camMode === 'heroFront') {
+        const dist = Math.max(8.2, Math.min(15.5, inputRef.current.cameraDistance));
+        const lookAhead = THREE.MathUtils.clamp(dist * 0.24, 1.4, 3.6);
+        camera.position.set(
+          heroX + Math.sin(heroYaw) * dist,
+          heroY + 4.6 + (dist - 9.2) * 0.28,
+          heroZ + Math.cos(heroYaw) * dist
+        );
+        camera.lookAt(
+          heroX + Math.sin(heroYaw) * lookAhead,
+          heroY + 0.95,
+          heroZ + Math.cos(heroYaw) * lookAhead
         );
       } else {
         camera.position.set(
@@ -3842,6 +3877,8 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
             staminaExhausted = false;
           }
 
+          const prevHeroX = heroX;
+          const prevHeroZ = heroZ;
           const joyMag = Math.hypot(inp.joyX, inp.joyY);
           const isFirstPersonControl = camModeNow === 'firstPerson';
           const effectiveMoveMag = isFirstPersonControl ? Math.abs(moveZ) : mag;
@@ -3852,11 +3889,11 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
           const moveSpeed =
             (isSwimming
               ? isRunning
-                ? 6.4
-                : 4.5
+                ? 5.8
+                : 3.9
               : isRunning
-              ? 8.6
-              : 5.8) * heroSpeedMult;
+              ? 7.4
+              : 3.6) * heroSpeedMult;
 
           if (isFirstPersonControl && canWalk) {
             collisionCtx.actorY = heroY;
@@ -3906,7 +3943,7 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
                   stepTimer = 0;
                   AudioEngine.playSound('splash');
                 }
-              } else if (heroVelY === 0 && stepTimer > (isRunning ? 0.24 : 0.34)) {
+              } else if (heroVelY === 0 && stepTimer > (isRunning ? 0.28 : 0.44)) {
                 stepTimer = 0;
                 AudioEngine.playSound(activeLevel.audio.step);
               }
@@ -3920,7 +3957,7 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
             let worldDX = 0;
             let worldDZ = 0;
 
-            if (camModeNow === 'front') {
+            if (camModeNow === 'front' || camModeNow === 'heroFront') {
               // Auto-right camera smoothly into straight-ahead view whenever travelling (unless actively dragging)
               if (!draggingCam) {
                 const wrappedOffset = Math.atan2(
@@ -3931,9 +3968,13 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
                 inp.lookPitchOffset = THREE.MathUtils.damp(inp.lookPitchOffset, 0, 7.0, dt);
               }
 
-              // Hero always faces forward; steering left/right turns the hero + world scene
+              // Hero always faces forward; steering left/right matches screen left/right
               const steerX = THREE.MathUtils.clamp(moveX, -1, 1);
-              heroYaw -= steerX * 2.35 * dt;
+              if (camModeNow === 'heroFront') {
+                heroYaw += steerX * 2.35 * dt;
+              } else {
+                heroYaw -= steerX * 2.35 * dt;
+              }
 
               const fwdX = Math.sin(heroYaw);
               const fwdZ = Math.cos(heroYaw);
@@ -3990,7 +4031,7 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
                 stepTimer = 0;
                 AudioEngine.playSound('splash');
               }
-            } else if (heroVelY === 0 && stepTimer > (isRunning ? 0.24 : 0.34)) {
+            } else if (heroVelY === 0 && stepTimer > (isRunning ? 0.28 : 0.44)) {
               stepTimer = 0;
               AudioEngine.playSound(activeLevel.audio.step);
             }
@@ -4135,13 +4176,20 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
           }
 
           const moving = (camModeNow === 'firstPerson' ? Math.abs(moveZ) > 0.08 : mag > 0.08) && canWalk;
+          const actualHorizSpeed =
+            simDt > 0.0001 ? Math.hypot(heroX - prevHeroX, heroZ - prevHeroZ) / simDt : 0;
+          const heroTotalScale = Math.max(0.45, activeProject.heroModelScale ?? 1);
+          const nominalRefSpeed = (isRunning ? 7.4 : 3.6) * heroTotalScale;
+          const locoVelocityRatio = moving
+            ? THREE.MathUtils.clamp(actualHorizSpeed / Math.max(0.5, nominalRefSpeed), 0.35, 1.85)
+            : 1;
 
           // Monotonically integrated animation phases (never jump phase when speed changes)
           if (isSwimming) {
             swimPhase += dt * (moving ? (isRunning ? 4.8 : 3.5) : 2.1);
             bobPhase += dt * (moving ? 2.4 : 1.7);
           } else if (moving) {
-            walkPhase += dt * (isRunning ? 12.0 : 8.8);
+            walkPhase += dt * (isRunning ? 8.8 : 5.4) * locoVelocityRatio;
           }
 
           if (isSwimming) {
@@ -4245,7 +4293,11 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
               heroCustom.group.children[0].rotation.x = recoilTilt * 0.75;
             }
 
-            const spd = (activeProject.heroAnimSpeed ?? 1) * (isSwimming && !moving ? 0.65 : 1);
+            const isLocomotingOnGround =
+              moving && !isSwimming && !isTrulyAirborne && attackAnimTimer <= 0 && inp.emoteTimer <= 0;
+            const spd =
+              (activeProject.heroAnimSpeed ?? 1) *
+              (isSwimming && !moving ? 0.65 : isLocomotingOnGround ? locoVelocityRatio : 1);
             heroCustom.update(simDt, spd);
           } else if (heroRig) {
             heroRig.shadowDisc.visible = !isSwimming;
@@ -5603,7 +5655,8 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
           for (const rt of runtimeEntities) {
             if (!rt.alive) continue;
 
-            rt.customInst?.update(dt);
+            const prevRtX = rt.x;
+            const prevRtZ = rt.z;
             rt.mechController?.update(dt);
             for (let fi = 0; fi < rt.floatSpinMeshes.length; fi++) {
               rt.floatSpinMeshes[fi].rotation.y += dt * 1.8;
@@ -6768,6 +6821,17 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
                 }
               }
             }
+
+            if (rt.customInst) {
+              const rtMovedSpeed =
+                simDt > 0.0001 ? Math.hypot(rt.x - prevRtX, rt.z - prevRtZ) / simDt : 0;
+              const isRtLocomoting =
+                rt.customInst.currentSlot === 'walk' || rt.customInst.currentSlot === 'run';
+              const rtSpd = isRtLocomoting
+                ? THREE.MathUtils.clamp(rtMovedSpeed / 3.4, 0.38, 1.75)
+                : 1;
+              rt.customInst.update(dt, rtSpd);
+            }
           }
           mechLevelStartsFired = true;
 
@@ -7556,6 +7620,8 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
           const targetFov =
             camModeNow === 'firstPerson'
               ? 68
+              : camModeNow === 'heroFront'
+              ? 58
               : camModeNow === 'sideScroll'
               ? 42
               : camModeNow === 'cozy'
@@ -7628,6 +7694,48 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
                 heroX + Math.sin(smoothCamYaw) * THREE.MathUtils.lerp(1.8, 1.2, caveCamBlend),
                 heroY + 1.28,
                 heroZ + Math.cos(smoothCamYaw) * THREE.MathUtils.lerp(1.8, 1.2, caveCamBlend)
+              );
+            } else if (camModeNow === 'heroFront') {
+              const openDist = Math.max(8.2, Math.min(15.5, camDist));
+              const dist = THREE.MathUtils.lerp(openDist, 4.4, caveCamBlend);
+              const openCamH = 4.6 + (openDist - 9.2) * 0.28 + inp.lookPitchOffset;
+              const camH = THREE.MathUtils.lerp(
+                openCamH,
+                2.1 + inp.lookPitchOffset * 0.25,
+                caveCamBlend
+              );
+              const desiredCamYaw = heroYaw + inp.lookYawOffset;
+              const yawDiff = Math.atan2(
+                Math.sin(desiredCamYaw - smoothCamYaw),
+                Math.cos(desiredCamYaw - smoothCamYaw)
+              );
+              smoothCamYaw += yawDiff * Math.min(1, dt * 9);
+
+              _targetCamPos.set(
+                heroX + Math.sin(smoothCamYaw) * dist + shakeX,
+                heroY + camH + shakeY,
+                heroZ + Math.cos(smoothCamYaw) * dist
+              );
+              if (caveCamBlend > 0.35) {
+                _targetCamPos.y = Math.min(
+                  _targetCamPos.y,
+                  MountainCave.floorY + MountainCave.ceilingHeight - 0.85
+                );
+              } else {
+                _targetCamPos.y = Math.max(
+                  _targetCamPos.y,
+                  sampleLevelHeight(activeLevel, _targetCamPos.x, _targetCamPos.z) + 1.8
+                );
+              }
+              const lookAhead = THREE.MathUtils.lerp(
+                THREE.MathUtils.clamp(openDist * 0.24, 1.4, 3.6),
+                1.1,
+                caveCamBlend
+              );
+              _lookTarget.set(
+                heroX + Math.sin(smoothCamYaw) * lookAhead,
+                heroY + THREE.MathUtils.lerp(0.95, 1.05, caveCamBlend),
+                heroZ + Math.cos(smoothCamYaw) * lookAhead
               );
             } else {
               const baseDist = THREE.MathUtils.lerp(camDist, 4.1, caveCamBlend);
@@ -8351,12 +8459,20 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
               className={`px-3 h-9 rounded-xl border text-xs font-extrabold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
                 resolvedCamMode === 'firstPerson'
                   ? 'bg-[#7C5CFF] border-[#7C5CFF] text-white'
+                  : resolvedCamMode === 'heroFront'
+                  ? 'bg-[#0EA5E9] border-[#0EA5E9] text-white'
                   : 'bg-black/70 border-white/15 text-white hover:bg-black/85'
               }`}
-              title="Toggle Character First-Person POV / Third-Person (V)"
+              title="Cycle Camera View: Behind / Front View / POV (V)"
             >
               <Eye size={14} />
-              <span>{resolvedCamMode === 'firstPerson' ? 'POV' : '3rd Person'}</span>
+              <span>
+                {resolvedCamMode === 'firstPerson'
+                  ? 'POV'
+                  : resolvedCamMode === 'heroFront'
+                  ? 'Front View'
+                  : 'Behind'}
+              </span>
               <span className="px-1.5 py-0.5 rounded bg-white/15 text-[10px] font-bold">V</span>
             </button>
           )}
@@ -8950,12 +9066,12 @@ export const PlayModeView: React.FC<{ store: MakerStore }> = ({ store }) => {
               : resolvedCamMode === 'sideScroll'
               ? `A/D or Stick move · W/Space jump · F hit · E use · M map · ${formatKeyCodeLabel(inventoryConfig.toggleKey)} bag`
               : isBuddiesMode
-              ? `WASD move · Q use power · X switch power · E gather/talk · M map · ${formatKeyCodeLabel(inventoryConfig.toggleKey)} bag · V POV`
+              ? `WASD move · Q use power · X switch power · E gather/talk · M map · ${formatKeyCodeLabel(inventoryConfig.toggleKey)} bag · V view`
               : resolvedCamMode === 'firstPerson'
-              ? `W/S move · A/D turn · Space jump · F hit · E gather/bench · M map · ${formatKeyCodeLabel(inventoryConfig.toggleKey)} bag · V exit POV`
-              : resolvedCamMode === 'front'
-              ? `WASD or Stick move · Space jump · F use tool / hit · E gather/bench · M map · ${formatKeyCodeLabel(inventoryConfig.toggleKey)} bag · V POV`
-              : `WASD move · Space jump · F use tool / hit · E gather/bench · M map · ${formatKeyCodeLabel(inventoryConfig.toggleKey)} bag · V POV`}
+              ? `W/S move · A/D turn · Space jump · F hit · E gather/bench · M map · ${formatKeyCodeLabel(inventoryConfig.toggleKey)} bag · V view`
+              : resolvedCamMode === 'front' || resolvedCamMode === 'heroFront'
+              ? `WASD or Stick move · Space jump · F use tool / hit · E gather/bench · M map · ${formatKeyCodeLabel(inventoryConfig.toggleKey)} bag · V view`
+              : `WASD move · Space jump · F use tool / hit · E gather/bench · M map · ${formatKeyCodeLabel(inventoryConfig.toggleKey)} bag · V view`}
           </div>
         </div>
       )}

@@ -2,7 +2,7 @@ export type StudioTheme = 'dark' | 'light';
 
 export type VisualStyleId = 'painterlyPBR' | 'celToon' | 'softFantasy';
 
-export type CameraMode = 'front' | 'chase' | 'cozy' | 'isometric' | 'sideScroll' | 'firstPerson';
+export type CameraMode = 'front' | 'heroFront' | 'chase' | 'cozy' | 'isometric' | 'sideScroll' | 'firstPerson';
 
 export type EnvironmentType = 'openWorld' | 'dungeon' | 'castle' | 'sideScroller' | 'scifi';
 
@@ -29,6 +29,16 @@ export type RigAnimationMode = 'auto' | 'clips' | 'procedural';
 
 export type RigSwingAxis = 'auto' | 'x' | '-x' | 'y' | '-y' | 'z' | '-z';
 
+export interface SlotMotionTuning {
+  speedMultiplier: number;
+  strideLength: number;
+  kneeBend: number;
+  armSwing: number;
+  armSideOffsetDeg: number;
+  bounce: number;
+  torsoLean: number;
+}
+
 export interface CustomRigSettings {
   mode: RigAnimationMode;
   boneMap: Partial<Record<RigBoneRole, string>>;
@@ -41,6 +51,8 @@ export interface CustomRigSettings {
   motionStrength: number;
   headMotion: number;
   facingOffsetDeg: number;
+  armRelaxAutoVersion?: number;
+  slotTuning?: Partial<Record<CustomClipSlot, Partial<SlotMotionTuning>>>;
 }
 
 export type MotionEasing = 'linear' | 'smooth' | 'easeIn' | 'easeOut' | 'elastic';

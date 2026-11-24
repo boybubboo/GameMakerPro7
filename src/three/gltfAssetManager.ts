@@ -554,7 +554,19 @@ export async function registerGeneratedGlbAsset(opts: {
     boneNames: cached.skeletonInfo.boneNames,
     animationClips: clipNames,
     clipMap: opts.existingMeta?.clipMap ?? autoMapAnimationClips(clipNames),
-    rigSettings: opts.existingMeta?.rigSettings ?? cached.defaultRigSettings,
+    rigSettings:
+      opts.existingMeta?.rigSettings
+        ? {
+            ...opts.existingMeta.rigSettings,
+            armRelaxAngle:
+              !opts.existingMeta.rigSettings.armRelaxAutoVersion &&
+              opts.existingMeta.rigSettings.armRelaxAngle === 0 &&
+              cached.defaultRigSettings.armRelaxAngle >= 15
+                ? cached.defaultRigSettings.armRelaxAngle
+                : opts.existingMeta.rigSettings.armRelaxAngle,
+            armRelaxAutoVersion: opts.existingMeta.rigSettings.armRelaxAutoVersion ?? 2,
+          }
+        : cached.defaultRigSettings,
     mechanisms: opts.mechanisms && opts.mechanisms.length > 0 ? opts.mechanisms : undefined,
     objectRecipe: opts.objectRecipe,
     characterRecipe: opts.characterRecipe,
@@ -592,6 +604,10 @@ export function resolveRigSettings(
       boneMap: { ...defaults.boneMap },
     };
   }
+  const upgradeLegacyArmRelax =
+    !saved.armRelaxAutoVersion &&
+    saved.armRelaxAngle === 0 &&
+    defaults.armRelaxAngle >= 15;
   return {
     mode: saved.mode ?? defaults.mode,
     boneMap:
@@ -599,7 +615,10 @@ export function resolveRigSettings(
         ? { ...saved.boneMap }
         : { ...defaults.boneMap },
     limbSwingAxis: saved.limbSwingAxis ?? defaults.limbSwingAxis,
-    armRelaxAngle: saved.armRelaxAngle ?? defaults.armRelaxAngle,
+    armRelaxAngle: upgradeLegacyArmRelax
+      ? defaults.armRelaxAngle
+      : (saved.armRelaxAngle ?? defaults.armRelaxAngle),
+    armRelaxAutoVersion: saved.armRelaxAutoVersion ?? defaults.armRelaxAutoVersion ?? 2,
     armSpreadAngle: saved.armSpreadAngle ?? defaults.armSpreadAngle,
     idleArmSpreadAngle: saved.idleArmSpreadAngle ?? defaults.idleArmSpreadAngle,
     mirrorArmRelax: saved.mirrorArmRelax ?? defaults.mirrorArmRelax,
@@ -607,6 +626,7 @@ export function resolveRigSettings(
     motionStrength: saved.motionStrength ?? defaults.motionStrength,
     headMotion: saved.headMotion ?? defaults.headMotion,
     facingOffsetDeg: saved.facingOffsetDeg ?? defaults.facingOffsetDeg,
+    slotTuning: saved.slotTuning ? { ...saved.slotTuning } : undefined,
   };
 }
 
@@ -923,7 +943,11 @@ export function instantiateCustomModel(
     },
     applyRigSettings(next: CustomRigSettings) {
       const facingChanged = next.facingOffsetDeg !== instance.rigSettings.facingOffsetDeg;
-      instance.rigSettings = { ...next, boneMap: { ...next.boneMap } };
+      instance.rigSettings = {
+        ...next,
+        boneMap: { ...next.boneMap },
+        slotTuning: next.slotTuning ? { ...next.slotTuning } : undefined,
+      };
       if (facingChanged) {
         scaledRoot.rotation.y = THREE.MathUtils.degToRad(next.facingOffsetDeg);
         proceduralRig?.recaptureAfterFacingChange();

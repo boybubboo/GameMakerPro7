@@ -1241,8 +1241,31 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
       st.scene.add(helper);
 
       const info = inspectModelSkeleton(built.root);
-      const rigSettings = createDefaultRigSettings(info, false);
-      const rigCtrl = new ProceduralRigController(st.charHolder, built.root, rigSettings);
+      const baseDefaults = createDefaultRigSettings(info, false);
+      const savedAsset = editingAssetId
+        ? store.customAssets.find((a) => a.id === editingAssetId)
+        : undefined;
+      const savedRig = savedAsset?.rigSettings;
+      const rigSettings = savedRig
+        ? {
+            ...baseDefaults,
+            ...savedRig,
+            boneMap: baseDefaults.boneMap,
+            armRelaxAngle:
+              !savedRig.armRelaxAutoVersion &&
+              savedRig.armRelaxAngle === 0 &&
+              baseDefaults.armRelaxAngle >= 15
+                ? baseDefaults.armRelaxAngle
+                : savedRig.armRelaxAngle,
+          }
+        : baseDefaults;
+      const rigCtrl = new ProceduralRigController(
+        st.charHolder,
+        built.root,
+        rigSettings,
+        savedAsset?.customAnimations,
+        savedAsset?.defaultSlotPresets
+      );
 
       st.built = built;
       st.skeletonHelper = helper;

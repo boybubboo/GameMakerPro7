@@ -24,6 +24,7 @@ import {
   Repeat,
   RotateCcw,
   Save,
+  SlidersHorizontal,
   Sparkles,
   Star,
   Trash2,
@@ -38,6 +39,8 @@ import {
   type CachedGLTF,
 } from '../../three/gltfAssetManager';
 import {
+  DEFAULT_SLOT_MOTION_TUNING,
+  resolveSlotMotionTuning,
   sampleMotionPresetToPose,
   type RigTestOverride,
 } from '../../three/proceduralRigAnimator';
@@ -51,6 +54,7 @@ import type {
   MotionEasing,
   RigAnimationMode,
   SavedPosePreset,
+  SlotMotionTuning,
 } from '../../types/maker';
 import { uid } from '../../utils/terrain';
 import {
@@ -168,7 +172,11 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
   const [lockCameraOrbit, setLockCameraOrbit] = useState(false);
 
   // Motion Editor state
-  const [draft, setDraft] = useState<CustomMotionPreset>(() => createBlankMotionDraft('idle'));
+  const [studioMode, setStudioMode] = useState<'gait' | 'pose'>('gait');
+  const [gaitPaused, setGaitPaused] = useState<boolean>(false);
+  const [gaitRigDraft, setGaitRigDraft] = useState<CustomRigSettings | null>(null);
+  const [gaitDirty, setGaitDirty] = useState<boolean>(false);
+  const [draft, setDraft] = useState<CustomMotionPreset>(() => createBlankMotionDraft('walk'));
   const [savedPresetId, setSavedPresetId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -213,6 +221,8 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
     }
 
     setIsPlaying(false);
+    setGaitPaused(false);
+    setGaitDirty(false);
     setPlayhead(0);
     setIsDirtyPose(false);
     setActiveSavedPoseId(null);
@@ -225,7 +235,7 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
       setWorkingBones(startSample.bones);
       setWorkingHipsY(startSample.hipsOffsetY);
     } else {
-      const fresh = createBlankMotionDraft('idle');
+      const fresh = createBlankMotionDraft('walk');
       setDraft(fresh);
       setSavedPresetId(null);
       setWorkingBones({});
@@ -259,6 +269,41 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
       facingOffsetDeg: 0,
     };
   }, [cachedInfo, selectedAsset]);
+
+  useEffect(() => {
+    if (!effectiveRig) {
+      setGaitRigDraft(null);
+      return;
+    }
+    if (!gaitDirty) {
+      setGaitRigDraft({
+        ...effectiveRig,
+        boneMap: { ...effectiveRig.boneMap },
+        slotTuning: effectiveRig.slotTuning ? { ...effectiveRig.slotTuning } : undefined,
+      });
+    }
+  }, [effectiveRig, selectedAsset?.id, gaitDirty]);
+
+  const stageRig: CustomRigSettings | null =
+    studioMode === 'gait' && gaitRigDraft ? gaitRigDraft : effectiveRig;
+
+  const activeSlotTuning: SlotMotionTuning = useMemo(
+    () => resolveSlotMotionTuning(stageRig ?? undefined, draft.slot),
+    [stageRig, draft.slot]
+  );
+
+  const stageAsset: CustomAssetMeta | null = useMemo(() => {
+    if (!selectedAsset) return null;
+    if (studioMode !== 'gait') return selectedAsset;
+    // In Base Gait mode, preview live procedural motion cleanly even if a keyframe preset overrides the slot
+    if (!selectedAsset.defaultSlotPresets?.[draft.slot]) return selectedAsset;
+    const nextDefs = { ...(selectedAsset.defaultSlotPresets ?? {}) };
+    delete nextDefs[draft.slot];
+    return {
+      ...selectedAsset,
+      defaultSlotPresets: nextDefs,
+    };
+  }, [selectedAsset, studioMode, draft.slot]);
 
   // Keep a valid bone selected
   useEffect(() => {
@@ -303,6 +348,7 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
 
   const effectiveTestOverride: RigTestOverride = useMemo(() => {
     if (boneNames.length === 0) return null;
+    if (studioMode === 'gait') return null;
     if (isPlaying && draft.keyframes.length >= 2) {
       return {
         kind: 'presetPreview',
@@ -316,7 +362,7 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
       bones: workingBones,
       hipsOffsetY: workingHipsY,
     };
-  }, [boneNames.length, isPlaying, draft, playhead, workingBones, workingHipsY]);
+  }, [boneNames.length, studioMode, isPlaying, draft, playhead, workingBones, workingHipsY]);
 
   const ghostStartPose = useMemo(() => {
     if (!showLoopGhost || !draft.loop || draft.keyframes.length === 0) return null;
@@ -689,6 +735,7 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
 
   const handleLoadPreset = (preset: CustomMotionPreset) => {
     const cloned: CustomMotionPreset = JSON.parse(JSON.stringify(preset));
+    setStudioMode('pose');
     setIsPlaying(false);
     setDraft(cloned);
     setSavedPresetId(cloned.id);
@@ -701,6 +748,7 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
 
   const handleCreateNewDraft = (slot: CustomClipSlot) => {
     const fresh = createBlankMotionDraft(slot);
+    setStudioMode('pose');
     setIsPlaying(false);
     setDraft(fresh);
     setSavedPresetId(null);
@@ -709,6 +757,80 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
     setWorkingHipsY(0);
     setIsDirtyPose(false);
   };
+
+  const updateSlotTuning = useCallback(
+    (patch: Partial<SlotMotionTuning>) => {
+      if (!stageRig) return;
+      const curSlot = resolveSlotMotionTuning(stageRig, draft.slot);
+      const nextSlot: SlotMotionTuning = { ...curSlot, ...patch };
+      setGaitRigDraft({
+        ...stageRig,
+        boneMap: { ...stageRig.boneMap },
+        slotTuning: {
+          ...(stageRig.slotTuning ?? {}),
+          [draft.slot]: nextSlot,
+        },
+      });
+      setGaitDirty(true);
+    },
+    [stageRig, draft.slot]
+  );
+
+  const updateSharedRig = useCallback(
+    (patch: Partial<CustomRigSettings>) => {
+      if (!stageRig) return;
+      setGaitRigDraft({
+        ...stageRig,
+        ...patch,
+        boneMap: { ...stageRig.boneMap },
+        slotTuning: stageRig.slotTuning ? { ...stageRig.slotTuning } : undefined,
+      });
+      setGaitDirty(true);
+    },
+    [stageRig]
+  );
+
+  const handleSaveGaitDefault = useCallback(() => {
+    if (!selectedAsset || !stageRig) return;
+    const slotLabel = SLOT_OPTIONS.find((s) => s.slot === draft.slot)?.short ?? draft.slot;
+    const nextSlotTuning = {
+      ...(stageRig.slotTuning ?? {}),
+      [draft.slot]: { ...resolveSlotMotionTuning(stageRig, draft.slot) },
+    };
+    const nextRig: CustomRigSettings = {
+      ...stageRig,
+      mode: stageRig.mode === 'clips' ? 'procedural' : stageRig.mode,
+      armRelaxAutoVersion: 2,
+      boneMap: { ...stageRig.boneMap },
+      slotTuning: nextSlotTuning,
+    };
+    const nextDefaults = { ...(selectedAsset.defaultSlotPresets ?? {}) };
+    if (nextDefaults[draft.slot]) {
+      delete nextDefaults[draft.slot];
+    }
+    setGaitRigDraft(nextRig);
+    setGaitDirty(false);
+    void store.updateCustomAssetMeta({
+      ...selectedAsset,
+      rigSettings: nextRig,
+      defaultSlotPresets: nextDefaults,
+    });
+    flashToast(`Saved ${slotLabel} defaults for ${selectedAsset.name}`);
+  }, [selectedAsset, stageRig, draft.slot, store, flashToast]);
+
+  const handleResetSlotGait = useCallback(() => {
+    if (!stageRig) return;
+    const nextTuning = { ...(stageRig.slotTuning ?? {}) };
+    nextTuning[draft.slot] = { ...DEFAULT_SLOT_MOTION_TUNING };
+    setGaitRigDraft({
+      ...stageRig,
+      boneMap: { ...stageRig.boneMap },
+      slotTuning: nextTuning,
+    });
+    setGaitDirty(true);
+    const slotLabel = SLOT_OPTIONS.find((s) => s.slot === draft.slot)?.short ?? draft.slot;
+    flashToast(`Reset ${slotLabel} gait sliders`);
+  }, [stageRig, draft.slot, flashToast]);
 
   const handleDeletePreset = (presetId: string) => {
     if (!selectedAsset) return;
@@ -840,6 +962,7 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
 
   const handleApplySavedPose = useCallback(
     (pose: SavedPosePreset, opts?: { mirror?: boolean; saveKeyframe?: boolean }) => {
+      setStudioMode('pose');
       setIsPlaying(false);
       let nextBones = clonePoseBones(pose.bones);
       if (opts?.mirror) {
@@ -1006,14 +1129,46 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
             </span>
           </div>
 
-          <input
-            type="text"
-            value={draft.name}
-            onChange={(e) => setDraft((prev) => ({ ...prev, name: e.target.value }))}
-            aria-label="Custom move name"
-            placeholder="Move name"
-            className="w-44 sm:w-52 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-[#1F2430] border border-slate-200/80 dark:border-white/[0.08] text-xs font-bold"
-          />
+          <div className="inline-flex items-center p-0.5 rounded-xl bg-slate-100 dark:bg-[#1F2430] border border-slate-200/80 dark:border-white/[0.08]">
+            <button
+              type="button"
+              onClick={() => {
+                setIsPlaying(false);
+                setStudioMode('gait');
+              }}
+              className={`px-2.5 py-1 rounded-lg text-xs font-extrabold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                studioMode === 'gait'
+                  ? 'bg-[#7C5CFF] text-white shadow-sm'
+                  : 'text-slate-600 dark:text-[#A5AEC4] hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <SlidersHorizontal size={12} />
+              <span>Base Gait & Speed</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setStudioMode('pose')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-extrabold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                studioMode === 'pose'
+                  ? 'bg-[#7C5CFF] text-white shadow-sm'
+                  : 'text-slate-600 dark:text-[#A5AEC4] hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <KeyRound size={12} />
+              <span>Keyframe Pose</span>
+            </button>
+          </div>
+
+          {studioMode === 'pose' && (
+            <input
+              type="text"
+              value={draft.name}
+              onChange={(e) => setDraft((prev) => ({ ...prev, name: e.target.value }))}
+              aria-label="Custom move name"
+              placeholder="Move name"
+              className="w-40 sm:w-48 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-[#1F2430] border border-slate-200/80 dark:border-white/[0.08] text-xs font-bold"
+            />
+          )}
 
           <select
             value={draft.slot}
@@ -1039,61 +1194,90 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
-          {savedPresetId && (
-            <button
-              type="button"
-              onClick={handleSaveOverwrite}
-              className="px-3 py-1.5 rounded-lg bg-[#7C5CFF] hover:bg-[#6A48F5] text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap"
-            >
-              <Save size={13} />
-              <span>Save</span>
-            </button>
+          {studioMode === 'gait' ? (
+            <>
+              <button
+                type="button"
+                onClick={handleSaveGaitDefault}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors ${
+                  gaitDirty
+                    ? 'bg-[#20B46A] hover:bg-[#1A9E5C] text-white'
+                    : 'bg-[#7C5CFF] hover:bg-[#6A48F5] text-white'
+                }`}
+              >
+                <Star size={12} className="fill-current" />
+                <span>
+                  Save Default {SLOT_OPTIONS.find((s) => s.slot === draft.slot)?.short}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={handleResetSlotGait}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-[#1F2430] hover:bg-slate-200 dark:hover:bg-[#2A3142] text-xs font-semibold inline-flex items-center gap-1 whitespace-nowrap"
+              >
+                <RotateCcw size={12} />
+                <span>Reset</span>
+              </button>
+            </>
+          ) : (
+            <>
+              {savedPresetId && (
+                <button
+                  type="button"
+                  onClick={handleSaveOverwrite}
+                  className="px-3 py-1.5 rounded-lg bg-[#7C5CFF] hover:bg-[#6A48F5] text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  <Save size={13} />
+                  <span>Save</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={handleSaveAsNew}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap ${
+                  savedPresetId
+                    ? 'bg-slate-100 dark:bg-[#1F2430] hover:bg-slate-200 dark:hover:bg-[#2A3142] text-slate-900 dark:text-white'
+                    : 'bg-[#7C5CFF] hover:bg-[#6A48F5] text-white'
+                }`}
+              >
+                <Plus size={13} />
+                <span>{savedPresetId ? 'Save As New' : 'Save Preset'}</span>
+              </button>
+
+              {savedPresetId && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSetDefaultForSlot(draft.slot, isCurrentDefault ? null : savedPresetId)
+                  }
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors ${
+                    isCurrentDefault
+                      ? 'bg-[#20B46A] text-white'
+                      : 'bg-[#20B46A]/15 text-[#16A34A] dark:text-[#34D399] hover:bg-[#20B46A]/25'
+                  }`}
+                >
+                  <Star size={12} className={isCurrentDefault ? 'fill-current' : ''} />
+                  <span>
+                    {isCurrentDefault
+                      ? `Default ${SLOT_OPTIONS.find((s) => s.slot === draft.slot)?.short}`
+                      : `Set Default ${SLOT_OPTIONS.find((s) => s.slot === draft.slot)?.short}`}
+                  </span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                disabled={boneNames.length === 0}
+                onClick={() => handleCaptureSavedPose('')}
+                title="Capture the current joint positions as a reusable thumbnail in Saved Poses"
+                className="px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-[#1F2430] hover:bg-[#7C5CFF] hover:text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors disabled:opacity-40"
+              >
+                <Camera size={12} />
+                <span>Capture Pose</span>
+              </button>
+            </>
           )}
-
-          <button
-            type="button"
-            onClick={handleSaveAsNew}
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap ${
-              savedPresetId
-                ? 'bg-slate-100 dark:bg-[#1F2430] hover:bg-slate-200 dark:hover:bg-[#2A3142] text-slate-900 dark:text-white'
-                : 'bg-[#7C5CFF] hover:bg-[#6A48F5] text-white'
-            }`}
-          >
-            <Plus size={13} />
-            <span>{savedPresetId ? 'Save As New' : 'Save Preset'}</span>
-          </button>
-
-          {savedPresetId && (
-            <button
-              type="button"
-              onClick={() =>
-                handleSetDefaultForSlot(draft.slot, isCurrentDefault ? null : savedPresetId)
-              }
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors ${
-                isCurrentDefault
-                  ? 'bg-[#20B46A] text-white'
-                  : 'bg-[#20B46A]/15 text-[#16A34A] dark:text-[#34D399] hover:bg-[#20B46A]/25'
-              }`}
-            >
-              <Star size={12} className={isCurrentDefault ? 'fill-current' : ''} />
-              <span>
-                {isCurrentDefault
-                  ? `Default ${SLOT_OPTIONS.find((s) => s.slot === draft.slot)?.short}`
-                  : `Set Default ${SLOT_OPTIONS.find((s) => s.slot === draft.slot)?.short}`}
-              </span>
-            </button>
-          )}
-
-          <button
-            type="button"
-            disabled={boneNames.length === 0}
-            onClick={() => handleCaptureSavedPose('')}
-            title="Capture the current joint positions as a reusable thumbnail in Saved Poses"
-            className="px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-[#1F2430] hover:bg-[#7C5CFF] hover:text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors disabled:opacity-40"
-          >
-            <Camera size={12} />
-            <span>Capture Pose</span>
-          </button>
 
           <input
             ref={fileInputRef}
@@ -1357,24 +1541,24 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
         {/* CENTER HUGE 3D STAGE */}
         <main className="flex-1 min-w-0 min-h-[360px] lg:min-h-0 relative bg-[#111521]">
           <RigPreviewStage
-            asset={selectedAsset}
-            rigSettings={effectiveRig}
+            asset={stageAsset ?? selectedAsset}
+            rigSettings={stageRig ?? effectiveRig}
             boneNames={boneNames}
             previewSlot={draft.slot}
-            paused={false}
+            paused={studioMode === 'gait' ? gaitPaused : false}
             showSkeleton={showSkeleton}
             xrayMesh={xrayMesh}
             cameraPreset={cameraPreset}
             cameraResetNonce={cameraResetNonce}
             testOverride={effectiveTestOverride}
-            highlightBoneName={selectedBone}
-            poseMode={boneNames.length > 0}
-            motionPlaying={isPlaying}
+            highlightBoneName={studioMode === 'pose' ? selectedBone : null}
+            poseMode={studioMode === 'pose' && boneNames.length > 0}
+            motionPlaying={studioMode === 'pose' ? isPlaying : false}
             workingBones={workingBones}
-            ghostStartPose={ghostStartPose}
-            onionSkin={onionSkinConfig}
-            showGizmo={showGizmo}
-            showJointDots={showJointDots}
+            ghostStartPose={studioMode === 'pose' ? ghostStartPose : null}
+            onionSkin={studioMode === 'pose' ? onionSkinConfig : null}
+            showGizmo={studioMode === 'pose' && showGizmo}
+            showJointDots={studioMode === 'pose' && showJointDots}
             gizmoSize={GIZMO_SIZE_MAP[gizmoSizePreset]}
             gizmoAxisFilter={gizmoAxisFilter}
             lockCameraOrbit={lockCameraOrbit}
@@ -1423,39 +1607,54 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
 
           {/* Compact Top-Right Viewport Display Toggles */}
           <div className="absolute top-3 right-3 flex flex-wrap items-center gap-1 p-1 rounded-xl bg-[#171A23]/95 border border-white/[0.12] z-10">
-            <button
-              type="button"
-              onClick={() => setOnionEnabled((v) => !v)}
-              title="Toggle ghostly 3D silhouettes of previous (rose) and next (green) keyframes"
-              className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 whitespace-nowrap ${
-                onionEnabled ? 'bg-[#FB7185] text-slate-950' : 'text-[#A5AEC4] hover:text-white'
-              }`}
-            >
-              <Layers size={12} />
-              <span>Onion Skin</span>
-            </button>
+            {studioMode === 'gait' ? (
+              <button
+                type="button"
+                onClick={() => setGaitPaused((p) => !p)}
+                className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 whitespace-nowrap ${
+                  gaitPaused ? 'bg-[#F59E0B] text-slate-950' : 'bg-[#20B46A] text-white'
+                }`}
+              >
+                {gaitPaused ? <Play size={12} /> : <Pause size={12} />}
+                <span>{gaitPaused ? 'Paused' : 'Live'}</span>
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setOnionEnabled((v) => !v)}
+                  title="Toggle ghostly 3D silhouettes of previous (rose) and next (green) keyframes"
+                  className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 whitespace-nowrap ${
+                    onionEnabled ? 'bg-[#FB7185] text-slate-950' : 'text-[#A5AEC4] hover:text-white'
+                  }`}
+                >
+                  <Layers size={12} />
+                  <span>Onion Skin</span>
+                </button>
 
-            <button
-              type="button"
-              onClick={() => setShowGizmo((v) => !v)}
-              className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 whitespace-nowrap ${
-                showGizmo ? 'bg-[#F59E0B] text-slate-950' : 'text-[#A5AEC4] hover:text-white'
-              }`}
-            >
-              <Compass size={12} />
-              <span>3D Rings</span>
-            </button>
+                <button
+                  type="button"
+                  onClick={() => setShowGizmo((v) => !v)}
+                  className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 whitespace-nowrap ${
+                    showGizmo ? 'bg-[#F59E0B] text-slate-950' : 'text-[#A5AEC4] hover:text-white'
+                  }`}
+                >
+                  <Compass size={12} />
+                  <span>3D Rings</span>
+                </button>
 
-            <button
-              type="button"
-              onClick={() => setShowJointDots((v) => !v)}
-              className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 whitespace-nowrap ${
-                showJointDots ? 'bg-[#7C5CFF] text-white' : 'text-[#A5AEC4] hover:text-white'
-              }`}
-            >
-              <CircleDot size={12} />
-              <span>Joints</span>
-            </button>
+                <button
+                  type="button"
+                  onClick={() => setShowJointDots((v) => !v)}
+                  className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 whitespace-nowrap ${
+                    showJointDots ? 'bg-[#7C5CFF] text-white' : 'text-[#A5AEC4] hover:text-white'
+                  }`}
+                >
+                  <CircleDot size={12} />
+                  <span>Joints</span>
+                </button>
+              </>
+            )}
 
             <button
               type="button"
@@ -1479,7 +1678,7 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
               <span>X-Ray</span>
             </button>
 
-            {draft.loop && (
+            {studioMode === 'pose' && draft.loop && (
               <button
                 type="button"
                 onClick={() => setShowLoopGhost((v) => !v)}
@@ -1494,7 +1693,7 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
           </div>
 
           {/* Touch-Friendly Gizmo Size & Axis Isolation Dock */}
-          {boneNames.length > 0 && showGizmo && !isPlaying && (
+          {studioMode === 'pose' && boneNames.length > 0 && showGizmo && !isPlaying && (
             <div className="absolute bottom-9 left-1/2 -translate-x-1/2 flex flex-wrap items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-2xl bg-[#171A23]/95 border border-white/[0.14] shadow-lg z-10 max-w-[95%]">
               <span className="text-[11px] font-extrabold text-[#F59E0B] px-1.5 truncate max-w-[130px]">
                 {selectedLabel}
@@ -1558,11 +1757,277 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
           )}
         </main>
 
-        {/* RIGHT INSPECTOR: JOINT ROTATION CONTROLLER & BODY MAP */}
+        {/* RIGHT INSPECTOR: BASE GAIT STUDIO OR KEYFRAME JOINT CONTROLLER */}
         <aside className="w-full lg:w-80 xl:w-[340px] shrink-0 lg:h-full lg:overflow-y-auto maker-scroll bg-white dark:bg-[#171A23] border-t lg:border-t-0 lg:border-l border-slate-200/80 dark:border-white/[0.08] p-4 space-y-4">
           {boneNames.length === 0 ? (
             <div className="py-10 text-center text-xs text-slate-500 dark:text-[#949BB0]">
               No skeleton bones detected on this model. Import a rigged character to animate joints.
+            </div>
+          ) : studioMode === 'gait' && stageRig ? (
+            <div className="space-y-4">
+              {/* Motion Type Picker */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-extrabold text-slate-900 dark:text-white">
+                    Motion Type ({selectedAsset.name})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setGaitPaused((p) => !p)}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold inline-flex items-center gap-1 ${
+                      gaitPaused
+                        ? 'bg-[#F59E0B]/20 text-[#D97706] dark:text-[#FBBF24]'
+                        : 'bg-[#20B46A]/15 text-[#16A34A] dark:text-[#34D399]'
+                    }`}
+                  >
+                    {gaitPaused ? <Play size={10} /> : <Pause size={10} />}
+                    <span>{gaitPaused ? 'Paused' : 'Playing'}</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-4 gap-1">
+                  {SLOT_OPTIONS.map(({ slot, short }) => {
+                    const active = draft.slot === slot;
+                    const hasSavedGait = Boolean(selectedAsset.rigSettings?.slotTuning?.[slot]);
+                    return (
+                      <button
+                        key={slot}
+                        type="button"
+                        onClick={() => setDraft((prev) => ({ ...prev, slot }))}
+                        className={`relative px-1.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors truncate ${
+                          active
+                            ? 'bg-[#7C5CFF] text-white'
+                            : 'bg-slate-100 dark:bg-[#1F2430] text-slate-700 dark:text-[#C8D0E4] hover:bg-slate-200 dark:hover:bg-[#2A3142]'
+                        }`}
+                      >
+                        {short}
+                        {hasSavedGait && (
+                          <span
+                            className={`absolute top-1 right-1 w-1.5 h-1.5 rounded-full ${
+                              active ? 'bg-white' : 'bg-[#20B46A]'
+                            }`}
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {selectedAsset.defaultSlotPresets?.[draft.slot] && (
+                  <div className="p-2 rounded-xl bg-[#F59E0B]/12 border border-[#F59E0B]/30 text-[11px] text-[#B45309] dark:text-[#FCD34D]">
+                    A custom keyframe move is currently set as default for{' '}
+                    <strong>{SLOT_OPTIONS.find((s) => s.slot === draft.slot)?.short}</strong>.
+                    Click Save Default below to use this gait instead.
+                  </div>
+                )}
+              </div>
+
+              {/* Per-Motion Speed & Gait Controls */}
+              <div className="space-y-3 rounded-2xl bg-slate-50 dark:bg-[#12151E] border border-slate-200/70 dark:border-white/[0.08] p-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 dark:text-[#949BB0]">
+                    {SLOT_OPTIONS.find((s) => s.slot === draft.slot)?.label} Gait & Speed
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleResetSlotGait}
+                    className="text-[10px] font-bold text-[#7C5CFF] hover:underline"
+                  >
+                    Reset {SLOT_OPTIONS.find((s) => s.slot === draft.slot)?.short}
+                  </button>
+                </div>
+
+                {(
+                  [
+                    {
+                      key: 'speedMultiplier',
+                      label: 'Step / Motion Speed',
+                      min: 0.3,
+                      max: 2.2,
+                      step: 0.05,
+                      fmt: (v: number) => `${v.toFixed(2)}×`,
+                    },
+                    {
+                      key: 'strideLength',
+                      label: draft.slot === 'idle' ? 'Stance Width' : 'Stride / Leg Swing',
+                      min: 0.3,
+                      max: 1.8,
+                      step: 0.05,
+                      fmt: (v: number) => `${Math.round(v * 100)}%`,
+                    },
+                    {
+                      key: 'kneeBend',
+                      label: 'Knee Bend',
+                      min: 0.15,
+                      max: 1.8,
+                      step: 0.05,
+                      fmt: (v: number) => `${Math.round(v * 100)}%`,
+                    },
+                    {
+                      key: 'armSwing',
+                      label: draft.slot === 'idle' ? 'Idle Arm Sway' : 'Arm Swing',
+                      min: 0,
+                      max: 1.8,
+                      step: 0.05,
+                      fmt: (v: number) => `${Math.round(v * 100)}%`,
+                    },
+                    {
+                      key: 'armSideOffsetDeg',
+                      label: 'Arms Out / At Sides',
+                      min: -20,
+                      max: 45,
+                      step: 1,
+                      fmt: (v: number) => `${v > 0 ? '+' : ''}${Math.round(v)}°`,
+                    },
+                    {
+                      key: 'bounce',
+                      label: 'Hip Bounce (Down / Up)',
+                      min: 0,
+                      max: 1.8,
+                      step: 0.05,
+                      fmt: (v: number) => `${Math.round(v * 100)}%`,
+                    },
+                    {
+                      key: 'torsoLean',
+                      label: 'Torso Lean / Posture',
+                      min: -15,
+                      max: 25,
+                      step: 1,
+                      fmt: (v: number) => `${v > 0 ? '+' : ''}${Math.round(v)}°`,
+                    },
+                  ] as const
+                ).map((cfg) => {
+                  const val = activeSlotTuning[cfg.key];
+                  return (
+                    <div key={cfg.key} className="space-y-1">
+                      <div className="flex items-center justify-between text-xs font-semibold">
+                        <span className="text-slate-700 dark:text-[#D5DCF0]">{cfg.label}</span>
+                        <span className="font-mono text-[11px] tabular-nums text-slate-600 dark:text-[#949BB0]">
+                          {cfg.fmt(val)}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={cfg.min}
+                        max={cfg.max}
+                        step={cfg.step}
+                        value={val}
+                        onChange={(e) => updateSlotTuning({ [cfg.key]: Number(e.target.value) })}
+                        className="w-full accent-[#7C5CFF]"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Character Base Arm Hang & Rig Strength */}
+              <div className="space-y-3 rounded-2xl bg-slate-50 dark:bg-[#12151E] border border-slate-200/70 dark:border-white/[0.08] p-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 dark:text-[#949BB0]">
+                    Character Base Rig
+                  </span>
+                  {cachedInfo && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateSharedRig({
+                          armRelaxAngle: cachedInfo.skeletonInfo.suggestedArmRelaxAngle,
+                          armRelaxAutoVersion: 2,
+                        })
+                      }
+                      className="text-[10px] font-bold text-[#7C5CFF] hover:underline"
+                    >
+                      Auto-Relax Arms ({cachedInfo.skeletonInfo.suggestedArmRelaxAngle}°)
+                    </button>
+                  )}
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-xs font-semibold">
+                    <span className="text-slate-700 dark:text-[#D5DCF0]">Base Arm Hang (From A-Pose)</span>
+                    <span className="font-mono text-[11px] tabular-nums text-slate-600 dark:text-[#949BB0]">
+                      {Math.round(stageRig.armRelaxAngle)}°
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={85}
+                    step={1}
+                    value={stageRig.armRelaxAngle}
+                    onChange={(e) =>
+                      updateSharedRig({
+                        armRelaxAngle: Number(e.target.value),
+                        armRelaxAutoVersion: 2,
+                      })
+                    }
+                    className="w-full accent-[#7C5CFF]"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-xs font-semibold">
+                    <span className="text-slate-700 dark:text-[#D5DCF0]">Overall Motion Strength</span>
+                    <span className="font-mono text-[11px] tabular-nums text-slate-600 dark:text-[#949BB0]">
+                      {Math.round(stageRig.motionStrength * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.3}
+                    max={2.0}
+                    step={0.05}
+                    value={stageRig.motionStrength}
+                    onChange={(e) => updateSharedRig({ motionStrength: Number(e.target.value) })}
+                    className="w-full accent-[#7C5CFF]"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-xs font-semibold">
+                    <span className="text-slate-700 dark:text-[#D5DCF0]">Head Motion</span>
+                    <span className="font-mono text-[11px] tabular-nums text-slate-600 dark:text-[#949BB0]">
+                      {Math.round(stageRig.headMotion * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={2.0}
+                    step={0.05}
+                    value={stageRig.headMotion}
+                    onChange={(e) => updateSharedRig({ headMotion: Number(e.target.value) })}
+                    className="w-full accent-[#7C5CFF]"
+                  />
+                </div>
+              </div>
+
+              {/* Save Default CTA + Sample to Keyframes */}
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={handleSaveGaitDefault}
+                  className="w-full py-2.5 px-3 rounded-xl bg-[#20B46A] hover:bg-[#1A9E5C] text-white text-xs font-extrabold inline-flex items-center justify-center gap-1.5 transition-colors shadow-sm"
+                >
+                  <Star size={13} className="fill-current" />
+                  <span className="truncate">
+                    Save Default for {selectedAsset.name} (
+                    {SLOT_OPTIONS.find((s) => s.slot === draft.slot)?.short})
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStudioMode('pose');
+                    handleGrabLivePose(draft.slot);
+                  }}
+                  className="w-full py-2 px-3 rounded-xl bg-slate-100 dark:bg-[#1F2430] hover:bg-[#7C5CFF]/15 hover:text-[#7C5CFF] text-xs font-bold inline-flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <Sparkles size={13} />
+                  <span>Grab Current Pose to Keyframes</span>
+                </button>
+              </div>
             </div>
           ) : (
             <>
@@ -1898,7 +2363,7 @@ export const MotionStage: React.FC<{ store: MakerStore }> = ({ store }) => {
       </div>
 
       {/* BOTTOM FULL-WIDTH KEYFRAME TIMELINE DOCK */}
-      {boneNames.length > 0 && (
+      {studioMode === 'pose' && boneNames.length > 0 && (
         <section className="shrink-0 bg-white dark:bg-[#171A23] border-t border-slate-200/80 dark:border-white/[0.08] px-4 py-3 space-y-2.5">
           {/* Row 1: Transport, Keyframe Actions, Pose Utilities, Timing */}
           <div className="flex flex-wrap items-center justify-between gap-2">

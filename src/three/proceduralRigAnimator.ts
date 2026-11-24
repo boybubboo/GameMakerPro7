@@ -8,7 +8,35 @@ import type {
   MotionEasing,
   RigBoneRole,
   RigSwingAxis,
+  SlotMotionTuning,
 } from '../types/maker';
+
+export const DEFAULT_SLOT_MOTION_TUNING: SlotMotionTuning = {
+  speedMultiplier: 1.0,
+  strideLength: 1.0,
+  kneeBend: 1.0,
+  armSwing: 1.0,
+  armSideOffsetDeg: 0,
+  bounce: 1.0,
+  torsoLean: 0,
+};
+
+export function resolveSlotMotionTuning(
+  settings: CustomRigSettings | undefined,
+  slot: CustomClipSlot
+): SlotMotionTuning {
+  const raw = settings?.slotTuning?.[slot];
+  if (!raw) return DEFAULT_SLOT_MOTION_TUNING;
+  return {
+    speedMultiplier: THREE.MathUtils.clamp(raw.speedMultiplier ?? 1, 0.25, 2.4),
+    strideLength: THREE.MathUtils.clamp(raw.strideLength ?? 1, 0.25, 1.85),
+    kneeBend: THREE.MathUtils.clamp(raw.kneeBend ?? 1, 0.15, 1.85),
+    armSwing: THREE.MathUtils.clamp(raw.armSwing ?? 1, 0, 1.85),
+    armSideOffsetDeg: THREE.MathUtils.clamp(raw.armSideOffsetDeg ?? 0, -25, 45),
+    bounce: THREE.MathUtils.clamp(raw.bounce ?? 1, 0, 1.85),
+    torsoLean: THREE.MathUtils.clamp(raw.torsoLean ?? 0, -18, 28),
+  };
+}
 
 export interface RigRoleMeta {
   role: RigBoneRole;
@@ -653,6 +681,9 @@ function estimateArmRelaxAngle(
   const pA = new THREE.Vector3();
   const pB = new THREE.Vector3();
 
+  let angleSum = 0;
+  let angleCount = 0;
+
   for (const [uName, lName] of pairs) {
     if (!uName) continue;
     const upper = byName.get(uName);
@@ -665,14 +696,18 @@ function estimateArmRelaxAngle(
     const len = dir.length();
     if (len < 0.001) continue;
     dir.divideScalar(len);
-    // If arm points mostly horizontal (T-pose: dir.y near 0), suggest lowering ~68 deg toward sides
-    if (dir.y > -0.22) return 68;
-    // Wide A-pose (dir.y around -0.45): suggest ~34 deg lower so idle arms hang naturally
-    if (dir.y > -0.68) return 34;
-    // Arms already hang down cleanly
-    return 0;
+    const horiz = Math.hypot(dir.x, dir.z);
+    const angleFromDownDeg = THREE.MathUtils.radToDeg(Math.atan2(horiz, -dir.y));
+    angleSum += angleFromDownDeg;
+    angleCount++;
   }
-  return 0;
+
+  if (angleCount === 0) return 0;
+  const avgAngleFromDown = angleSum / angleCount;
+  // Already hanging cleanly near body sides
+  if (avgAngleFromDown <= 13) return 0;
+  // Leave ~8 deg natural side clearance so arms rest by sides without clipping hips
+  return THREE.MathUtils.clamp(Math.round(avgAngleFromDown - 8), 0, 82);
 }
 
 export function inspectModelSkeleton(root: THREE.Object3D): SkeletonInspection {
@@ -701,6 +736,7 @@ export function createDefaultRigSettings(
     boneMap: { ...inspection.autoBoneMap },
     limbSwingAxis: 'auto',
     armRelaxAngle: inspection.suggestedArmRelaxAngle,
+    armRelaxAutoVersion: 2,
     armSpreadAngle: 0,
     idleArmSpreadAngle: 0,
     mirrorArmRelax: true,
@@ -1356,12 +1392,16 @@ export class ProceduralRigController {
     }
   }
 
-  private getArmRelaxRoll(role: 'leftUpperArm' | 'rightUpperArm', slot: CustomClipSlot): number {
+  private getArmRelaxRoll(
+    role: 'leftUpperArm' | 'rightUpperArm',
+    slot: CustomClipSlot,
+    extraSpreadDeg = 0
+  ): number {
     const activeSpreadDeg =
       slot === 'idle'
         ? (this.settings.idleArmSpreadAngle ?? 0)
         : (this.settings.armSpreadAngle ?? 0);
-    const netLowerDeg = this.settings.armRelaxAngle - activeSpreadDeg;
+    const netLowerDeg = this.settings.armRelaxAngle - activeSpreadDeg - extraSpreadDeg;
     if (Math.abs(netLowerDeg) < 0.25) return 0;
     const rad = THREE.MathUtils.degToRad(netLowerDeg);
     const boneName = this.settings.boneMap[role];
@@ -1457,7 +1497,9 @@ export class ProceduralRigController {
     if (this.allBones.size === 0) return;
 
     const clampedDt = rawClampedDt;
-    this.elapsed += clampedDt * Math.max(0.15, speed);
+    const slotTuning = resolveSlotMotionTuning(this.settings, slot);
+    const effectiveSpeed = Math.max(0.15, speed * slotTuning.speedMultiplier);
+    this.elapsed += clampedDt * effectiveSpeed;
 
     if (slot !== this.lastSlot) {
       this.slotElapsed = 0;
@@ -1466,9 +1508,9 @@ export class ProceduralRigController {
       }
     }
     this.lastSlot = slot;
-    this.slotElapsed += clampedDt * Math.max(0.15, speed);
+    this.slotElapsed += clampedDt * effectiveSpeed;
     if (slot === 'attack') {
-      this.attackElapsed += clampedDt * Math.max(0.25, speed);
+      this.attackElapsed += clampedDt * Math.max(0.25, speed * slotTuning.speedMultiplier);
     }
 
     // 0. Motion Editor Pose Snapshot (direct interactive joint posing)
@@ -1529,8 +1571,8 @@ export class ProceduralRigController {
 
     const strength = THREE.MathUtils.clamp(this.settings.motionStrength, 0.2, 2.2);
     const headMult = THREE.MathUtils.clamp(this.settings.headMotion, 0, 2.2);
-    const leftRelax = this.getArmRelaxRoll('leftUpperArm', slot);
-    const rightRelax = this.getArmRelaxRoll('rightUpperArm', slot);
+    const leftRelax = this.getArmRelaxRoll('leftUpperArm', slot, slotTuning.armSideOffsetDeg);
+    const rightRelax = this.getArmRelaxRoll('rightUpperArm', slot, slotTuning.armSideOffsetDeg);
 
     // 2. Single-role Wiggle Test in the Rig Inspector
     if (this.testOverride && this.testOverride.kind === 'role') {
@@ -1593,25 +1635,45 @@ export class ProceduralRigController {
     const t = this.elapsed;
 
     if (slot === 'idle') {
-      const breath = Math.sin(t * 2.2);
-      const lookYaw = Math.sin(t * 0.95) * 0.22 * headMult;
-      const lookPitch = Math.sin(t * 1.45 + 0.6) * 0.07 * headMult;
-      const lookRoll = Math.sin(t * 0.7) * 0.05 * headMult;
+      const breath = Math.sin(t * 2.0);
+      const lookYaw = Math.sin(t * 0.85) * 0.16 * headMult;
+      const lookPitch = Math.sin(t * 1.35 + 0.6) * 0.055 * headMult;
+      const lookRoll = Math.sin(t * 0.65) * 0.04 * headMult;
+      const leanBias = THREE.MathUtils.degToRad(slotTuning.torsoLean);
+      const kneeSoft = THREE.MathUtils.clamp(slotTuning.kneeBend, 0.15, 1.85);
+      const armSway = 0.032 * strength * slotTuning.armSwing;
+      const bounceMult = slotTuning.bounce;
 
-      this.applyCharSpacePose('hips', 0, Math.sin(t * 1.1) * 0.04 * strength, 0);
-      this.applyCharSpacePose('spine', breath * 0.035 * strength, 0, Math.sin(t * 1.1) * 0.025 * strength);
-      this.applyCharSpacePose('chest', breath * 0.04 * strength, 0, 0);
-      this.applyCharSpacePose('neck', lookPitch * 0.35, lookYaw * 0.35, 0);
-      this.applyCharSpacePose('head', lookPitch, lookYaw, lookRoll);
+      const hipsCap = this.settings.boneMap.hips ? this.allBones.get(this.settings.boneMap.hips) : undefined;
+      if (hipsCap) {
+        const refLen = Math.max(0.05, Math.min(1.5, Math.abs(hipsCap.restPos.y) || 0.8));
+        const settleDrop = (0.008 * kneeSoft + Math.sin(t * 2.0 - 0.5) * 0.004 * bounceMult) * refLen * strength;
+        hipsCap.node.position.y = hipsCap.restPos.y - settleDrop;
+      }
 
-      this.applyCharSpacePose('leftUpperArm', Math.sin(t * 1.9) * 0.07 * strength, 0, leftRelax + breath * 0.035, false);
-      this.applyCharSpacePose('rightUpperArm', -Math.sin(t * 1.9) * 0.07 * strength, 0, rightRelax - breath * 0.035, true);
-      this.applyCharSpacePose('leftLowerArm', -0.14 * strength, 0, 0, false);
-      this.applyCharSpacePose('rightLowerArm', -0.14 * strength, 0, 0, true);
+      this.applyCharSpacePose('hips', leanBias * 0.25, Math.sin(t * 0.95) * 0.03 * strength, 0);
+      this.applyCharSpacePose(
+        'spine',
+        leanBias * 0.45 + breath * 0.028 * strength,
+        0,
+        Math.sin(t * 0.95) * 0.02 * strength
+      );
+      this.applyCharSpacePose('chest', leanBias * 0.3 + breath * 0.035 * strength, 0, 0);
+      this.applyCharSpacePose('neck', (-leanBias * 0.35 + lookPitch * 0.35) * headMult, lookYaw * 0.35, 0);
+      this.applyCharSpacePose('head', -leanBias * 0.45 * headMult + lookPitch, lookYaw, lookRoll);
+
+      // Arms hang relaxed by character's sides with subtle natural breathing sway
+      this.applyCharSpacePose('leftUpperArm', Math.sin(t * 1.85) * armSway, 0, leftRelax + breath * 0.02, false);
+      this.applyCharSpacePose('rightUpperArm', -Math.sin(t * 1.85) * armSway, 0, rightRelax - breath * 0.02, true);
+      this.applyCharSpacePose('leftLowerArm', -0.15 * strength, 0, 0, false);
+      this.applyCharSpacePose('rightLowerArm', -0.15 * strength, 0, 0, true);
 
       this.runBlend = THREE.MathUtils.damp(this.runBlend, 0, 8, clampedDt);
-      this.applyCharSpacePose('leftUpperLeg', -0.03 * strength, 0, 0, false);
-      this.applyCharSpacePose('rightUpperLeg', 0.03 * strength, 0, 0, true);
+      const strideBias = 0.03 * strength * slotTuning.strideLength;
+      this.applyCharSpacePose('leftUpperLeg', -0.04 * kneeSoft * strength - strideBias, 0, 0, false);
+      this.applyCharSpacePose('rightUpperLeg', -0.02 * kneeSoft * strength + strideBias, 0, 0, true);
+      this.applyCharSpacePose('leftLowerLeg', 0.09 * kneeSoft * strength, 0, 0, false);
+      this.applyCharSpacePose('rightLowerLeg', 0.06 * kneeSoft * strength, 0, 0, true);
       this.smoothLiveBoneQuaternions(clampedDt, 16);
       return;
     }
@@ -1621,70 +1683,101 @@ export class ProceduralRigController {
       this.runBlend = THREE.MathUtils.damp(this.runBlend, targetRun, 7.5, clampedDt);
       const rb = this.runBlend;
 
-      // Monotonic phase integration: walk (6.2) -> smooth athletic run (8.3) with ZERO phase jumps!
-      const freq = THREE.MathUtils.lerp(6.2, 8.3, rb);
-      const safeSpeed = THREE.MathUtils.clamp(speed, 0.25, 1.55);
+      const walkTuning = resolveSlotMotionTuning(this.settings, 'walk');
+      const runTuning = resolveSlotMotionTuning(this.settings, 'run');
+      const speedMult = THREE.MathUtils.lerp(walkTuning.speedMultiplier, runTuning.speedMultiplier, rb);
+      const strideScale = THREE.MathUtils.lerp(walkTuning.strideLength, runTuning.strideLength, rb);
+      const kneeScale = THREE.MathUtils.lerp(walkTuning.kneeBend, runTuning.kneeBend, rb);
+      const armSwingScale = THREE.MathUtils.lerp(walkTuning.armSwing, runTuning.armSwing, rb);
+      const armSideOffset = THREE.MathUtils.lerp(walkTuning.armSideOffsetDeg, runTuning.armSideOffsetDeg, rb);
+      const bounceScale = THREE.MathUtils.lerp(walkTuning.bounce, runTuning.bounce, rb);
+      const leanBiasDeg = THREE.MathUtils.lerp(walkTuning.torsoLean, runTuning.torsoLean, rb);
+
+      const walkArmRelaxL = this.getArmRelaxRoll('leftUpperArm', slot, armSideOffset);
+      const walkArmRelaxR = this.getArmRelaxRoll('rightUpperArm', slot, armSideOffset);
+
+      // Grounded, calm natural walk frequency (4.8 rad/s -> ~1.53 steps/s) blending smoothly into run (7.8 rad/s)
+      const freq = THREE.MathUtils.lerp(4.8, 7.8, rb);
+      const safeSpeed = THREE.MathUtils.clamp(speed * speedMult, 0.2, 2.2);
       this.locoPhase = (this.locoPhase + clampedDt * freq * safeSpeed) % (Math.PI * 200);
 
-      const stride = Math.sin(this.locoPhase);
-      const strideCos = Math.cos(this.locoPhase);
-      const legAmp = THREE.MathUtils.lerp(0.48, 0.64, rb) * strength;
-      const armAmp = THREE.MathUtils.lerp(0.44, 0.62, rb) * strength;
-      const lean = THREE.MathUtils.lerp(0.06, 0.13, rb) * strength;
+      // Phase aligned to Reference Cycle:
+      // phi = 0 -> CONTACT | 0.28*PI -> DOWN | 0.55*PI -> PASSING (stance) | 0.80*PI -> UP | 1.44*PI -> PASSING (swing knee peak)
+      const phiL = this.locoPhase;
+      const phiR = this.locoPhase + Math.PI;
+      const swingSin = Math.cos(phiL); // +1 when Left leg is forward (Contact), -1 when Right leg is forward
 
-      // Scale-safe subtle vertical hip bounce (proportional to actual bone local height so cm/m rigs never glitch)
+      const legAmp = THREE.MathUtils.lerp(0.45, 0.65, rb) * strength * strideScale;
+      const armAmp = THREE.MathUtils.lerp(0.24, 0.56, rb) * strength * armSwingScale;
+      const kneeAmp = THREE.MathUtils.lerp(0.95, 1.22, rb) * strength * kneeScale;
+      const lean = THREE.MathUtils.lerp(0.045, 0.13, rb) * strength + THREE.MathUtils.degToRad(leanBiasDeg);
+
+      // Double-frequency hip bob: dips DOWN on Down (0.25*PI / 1.25*PI), rises UP on Up (0.75*PI / 1.75*PI)
       const hipsCap = this.settings.boneMap.hips ? this.allBones.get(this.settings.boneMap.hips) : undefined;
       if (hipsCap) {
         const refLen = Math.max(0.05, Math.min(1.5, Math.abs(hipsCap.restPos.y) || 0.8));
-        const bounceRatio = THREE.MathUtils.lerp(0.018, 0.032, rb);
-        const bounce = Math.abs(Math.sin(this.locoPhase)) * refLen * bounceRatio * strength;
+        const bobWave = -Math.sin(2 * phiL);
+        const dipRatio = THREE.MathUtils.lerp(0.042, 0.06, rb);
+        const riseRatio = THREE.MathUtils.lerp(0.022, 0.044, rb);
+        const bounce = (bobWave < 0 ? bobWave * dipRatio : bobWave * riseRatio) * refLen * bounceScale * strength;
         hipsCap.node.position.y = hipsCap.restPos.y + bounce;
       }
 
       this.applyCharSpacePose(
         'hips',
         lean * 0.25,
-        -stride * THREE.MathUtils.lerp(0.08, 0.11, rb) * strength,
-        stride * 0.04 * strength
+        -swingSin * THREE.MathUtils.lerp(0.065, 0.1, rb) * strength,
+        swingSin * THREE.MathUtils.lerp(0.032, 0.042, rb) * strength
       );
       this.applyCharSpacePose(
         'spine',
-        lean * 0.5,
-        stride * THREE.MathUtils.lerp(0.08, 0.12, rb) * strength,
-        -stride * 0.028 * strength
+        lean * 0.48,
+        swingSin * THREE.MathUtils.lerp(0.07, 0.11, rb) * strength,
+        -swingSin * 0.024 * strength
       );
       this.applyCharSpacePose(
         'chest',
-        lean * 0.35,
-        stride * THREE.MathUtils.lerp(0.06, 0.1, rb) * strength,
+        lean * 0.32,
+        swingSin * THREE.MathUtils.lerp(0.055, 0.09, rb) * strength,
         0
       );
-      this.applyCharSpacePose('neck', -lean * 0.35 * headMult, -stride * 0.05 * headMult, 0);
+      this.applyCharSpacePose('neck', -lean * 0.35 * headMult, -swingSin * 0.045 * headMult, 0);
       this.applyCharSpacePose(
         'head',
-        (-lean * 0.42 + Math.sin(this.locoPhase * 2) * 0.025) * headMult,
-        -stride * 0.06 * headMult,
+        (-lean * 0.42 - Math.sin(phiL * 2) * 0.022) * headMult,
+        -swingSin * 0.055 * headMult,
         0
       );
 
-      // Legs swing cleanly opposite each other; knees bend naturally on lift half-cycle
-      this.applyCharSpacePose('leftUpperLeg', -stride * legAmp, 0, 0, false);
-      this.applyCharSpacePose('rightUpperLeg', stride * legAmp, 0, 0, true);
+      // Compute symmetric Contact -> Down -> Passing -> Up thigh & knee angles
+      const evalLeg = (phi: number) => {
+        const thigh = -Math.cos(phi) * legAmp - 0.025 * legAmp;
+        // Stance weight-absorption bend around Down (~0.28*PI)
+        const stanceDown = Math.pow(Math.max(0, Math.cos(phi - 0.28 * Math.PI)), 2.6);
+        // Swing knee flexion peaking cleanly at Passing (~1.44*PI) as leg bends to clear the floor
+        const swingPass = Math.pow(Math.max(0, Math.cos(phi - 1.44 * Math.PI)), 1.65);
+        const baseKnee = THREE.MathUtils.lerp(0.05, 0.14, rb);
+        const stanceAmp = THREE.MathUtils.lerp(0.42, 0.52, rb);
+        const swingPassAmp = THREE.MathUtils.lerp(0.95, 1.24, rb);
+        const knee = (baseKnee + stanceDown * stanceAmp + swingPass * swingPassAmp) * kneeAmp;
+        return { thigh, knee };
+      };
 
-      const kneeAmp = THREE.MathUtils.lerp(0.6, 0.84, rb) * strength;
-      const leftKnee = Math.max(0, -stride * 0.62 + Math.max(0, strideCos) * 0.52) * kneeAmp;
-      const rightKnee = Math.max(0, stride * 0.62 + Math.max(0, -strideCos) * 0.52) * kneeAmp;
-      this.applyCharSpacePose('leftLowerLeg', leftKnee, 0, 0, false);
-      this.applyCharSpacePose('rightLowerLeg', rightKnee, 0, 0, true);
+      const leftLeg = evalLeg(phiL);
+      const rightLeg = evalLeg(phiR);
+      this.applyCharSpacePose('leftUpperLeg', leftLeg.thigh, 0, 0, false);
+      this.applyCharSpacePose('rightUpperLeg', rightLeg.thigh, 0, 0, true);
+      this.applyCharSpacePose('leftLowerLeg', leftLeg.knee, 0, 0, false);
+      this.applyCharSpacePose('rightLowerLeg', rightLeg.knee, 0, 0, true);
 
-      // Arms counter-swing smoothly against legs
-      this.applyCharSpacePose('leftUpperArm', stride * armAmp, 0, leftRelax, false);
-      this.applyCharSpacePose('rightUpperArm', -stride * armAmp, 0, rightRelax, true);
+      // Arms rest comfortably by character's sides and counter-swing gently opposite legs
+      this.applyCharSpacePose('leftUpperArm', swingSin * armAmp, 0, walkArmRelaxL, false);
+      this.applyCharSpacePose('rightUpperArm', -swingSin * armAmp, 0, walkArmRelaxR, true);
 
-      const elbowBase = THREE.MathUtils.lerp(0.24, 0.62, rb) * strength;
-      const elbowSwing = THREE.MathUtils.lerp(0.26, 0.36, rb) * strength;
-      const leftElbow = -elbowBase - Math.max(0, -stride) * elbowSwing;
-      const rightElbow = -elbowBase - Math.max(0, stride) * elbowSwing;
+      const elbowBase = THREE.MathUtils.lerp(0.18, 0.58, rb) * strength;
+      const elbowSwing = THREE.MathUtils.lerp(0.16, 0.34, rb) * strength * THREE.MathUtils.clamp(armSwingScale, 0.2, 1.6);
+      const leftElbow = -elbowBase - Math.max(0, -swingSin) * elbowSwing;
+      const rightElbow = -elbowBase - Math.max(0, swingSin) * elbowSwing;
       this.applyCharSpacePose('leftLowerArm', leftElbow, 0, 0, false);
       this.applyCharSpacePose('rightLowerArm', rightElbow, 0, 0, true);
 
@@ -1697,21 +1790,24 @@ export class ProceduralRigController {
 
     if (slot === 'jump') {
       const hover = Math.sin(t * 4.5);
-      this.applyCharSpacePose('spine', -0.08 * strength, 0, 0);
-      this.applyCharSpacePose('chest', -0.06 * strength, 0, 0);
+      const kneeScale = slotTuning.kneeBend;
+      const armScale = slotTuning.armSwing;
+      const leanBias = THREE.MathUtils.degToRad(slotTuning.torsoLean);
+      this.applyCharSpacePose('spine', (-0.08 * strength) + leanBias * 0.5, 0, 0);
+      this.applyCharSpacePose('chest', (-0.06 * strength) + leanBias * 0.4, 0, 0);
       this.applyCharSpacePose('head', -0.14 * headMult, 0, 0);
 
       // Arms raised slightly outward/upward for balance
-      this.applyCharSpacePose('leftUpperArm', -0.52 * strength, 0, leftRelax * 0.35 + hover * 0.08, false);
-      this.applyCharSpacePose('rightUpperArm', -0.52 * strength, 0, rightRelax * 0.35 - hover * 0.08, true);
+      this.applyCharSpacePose('leftUpperArm', -0.48 * strength * armScale, 0, leftRelax * 0.45 + hover * 0.08, false);
+      this.applyCharSpacePose('rightUpperArm', -0.48 * strength * armScale, 0, rightRelax * 0.45 - hover * 0.08, true);
       this.applyCharSpacePose('leftLowerArm', -0.45 * strength, 0, 0, false);
       this.applyCharSpacePose('rightLowerArm', -0.45 * strength, 0, 0, true);
 
       // Knees tucked mid-air
-      this.applyCharSpacePose('leftUpperLeg', -0.48 * strength, 0, 0, false);
-      this.applyCharSpacePose('rightUpperLeg', -0.26 * strength, 0, 0, true);
-      this.applyCharSpacePose('leftLowerLeg', 0.85 * strength, 0, 0, false);
-      this.applyCharSpacePose('rightLowerLeg', 0.55 * strength, 0, 0, true);
+      this.applyCharSpacePose('leftUpperLeg', -0.48 * strength * slotTuning.strideLength, 0, 0, false);
+      this.applyCharSpacePose('rightUpperLeg', -0.26 * strength * slotTuning.strideLength, 0, 0, true);
+      this.applyCharSpacePose('leftLowerLeg', 0.85 * strength * kneeScale, 0, 0, false);
+      this.applyCharSpacePose('rightLowerLeg', 0.55 * strength * kneeScale, 0, 0, true);
       this.smoothLiveBoneQuaternions(clampedDt, 16);
       return;
     }
@@ -1720,22 +1816,25 @@ export class ProceduralRigController {
       const stroke = Math.sin(t * 5.2);
       const strokeCos = Math.cos(t * 5.2);
       const kick = Math.sin(t * 10.4);
+      const armScale = slotTuning.armSwing;
+      const kneeScale = slotTuning.kneeBend;
+      const leanBias = THREE.MathUtils.degToRad(slotTuning.torsoLean);
 
-      this.applyCharSpacePose('spine', 0.22 * strength, stroke * 0.16 * strength, 0);
-      this.applyCharSpacePose('chest', 0.15 * strength, stroke * 0.14 * strength, 0);
+      this.applyCharSpacePose('spine', 0.22 * strength + leanBias * 0.5, stroke * 0.16 * strength, 0);
+      this.applyCharSpacePose('chest', 0.15 * strength + leanBias * 0.4, stroke * 0.14 * strength, 0);
       this.applyCharSpacePose('head', -0.34 * headMult, stroke * 0.12 * headMult, 0);
 
       // Alternating sweeping swim strokes
-      this.applyCharSpacePose('leftUpperArm', (-0.85 + stroke * 0.72) * strength, 0, leftRelax * 0.4 + strokeCos * 0.28, false);
-      this.applyCharSpacePose('rightUpperArm', (-0.85 - stroke * 0.72) * strength, 0, rightRelax * 0.4 - strokeCos * 0.28, true);
+      this.applyCharSpacePose('leftUpperArm', (-0.85 + stroke * 0.72 * armScale) * strength, 0, leftRelax * 0.4 + strokeCos * 0.28, false);
+      this.applyCharSpacePose('rightUpperArm', (-0.85 - stroke * 0.72 * armScale) * strength, 0, rightRelax * 0.4 - strokeCos * 0.28, true);
       this.applyCharSpacePose('leftLowerArm', (-0.38 - Math.max(0, stroke) * 0.42) * strength, 0, 0, false);
       this.applyCharSpacePose('rightLowerArm', (-0.38 - Math.max(0, -stroke) * 0.42) * strength, 0, 0, true);
 
       // Flutter kick
-      this.applyCharSpacePose('leftUpperLeg', (0.2 + kick * 0.38) * strength, 0, 0, false);
-      this.applyCharSpacePose('rightUpperLeg', (0.2 - kick * 0.38) * strength, 0, 0, true);
-      this.applyCharSpacePose('leftLowerLeg', (0.24 + Math.max(0, kick) * 0.32) * strength, 0, 0, false);
-      this.applyCharSpacePose('rightLowerLeg', (0.24 + Math.max(0, -kick) * 0.32) * strength, 0, 0, true);
+      this.applyCharSpacePose('leftUpperLeg', (0.2 + kick * 0.38 * slotTuning.strideLength) * strength, 0, 0, false);
+      this.applyCharSpacePose('rightUpperLeg', (0.2 - kick * 0.38 * slotTuning.strideLength) * strength, 0, 0, true);
+      this.applyCharSpacePose('leftLowerLeg', (0.24 + Math.max(0, kick) * 0.32) * strength * kneeScale, 0, 0, false);
+      this.applyCharSpacePose('rightLowerLeg', (0.24 + Math.max(0, -kick) * 0.32) * strength * kneeScale, 0, 0, true);
       this.smoothLiveBoneQuaternions(clampedDt, 16);
       return;
     }
@@ -1745,42 +1844,47 @@ export class ProceduralRigController {
       const cycle = (this.attackElapsed % 0.62) / 0.62;
       const windup = Math.sin(Math.min(1, cycle / 0.35) * Math.PI * 0.5);
       const strike = cycle < 0.35 ? -windup : Math.sin(((cycle - 0.35) / 0.65) * Math.PI);
+      const armScale = slotTuning.armSwing;
+      const kneeScale = slotTuning.kneeBend;
+      const leanBias = THREE.MathUtils.degToRad(slotTuning.torsoLean);
 
-      this.applyCharSpacePose('spine', strike * 0.24 * strength, strike * 0.42 * strength, 0);
-      this.applyCharSpacePose('chest', strike * 0.18 * strength, strike * 0.34 * strength, 0);
+      this.applyCharSpacePose('spine', strike * 0.24 * strength + leanBias * 0.5, strike * 0.42 * strength, 0);
+      this.applyCharSpacePose('chest', strike * 0.18 * strength + leanBias * 0.4, strike * 0.34 * strength, 0);
       this.applyCharSpacePose('head', -strike * 0.08 * headMult, -strike * 0.32 * headMult, 0);
 
       // Right arm winds up high and chops down/across
       this.applyCharSpacePose(
         'rightUpperArm',
-        (-1.45 * (1 - Math.max(0, strike)) + 0.55 * Math.max(0, strike)) * strength,
+        (-1.45 * (1 - Math.max(0, strike)) + 0.55 * Math.max(0, strike)) * strength * armScale,
         strike * 0.35 * strength,
-        rightRelax * 0.5,
+        rightRelax * 0.55,
         true
       );
       this.applyCharSpacePose('rightLowerArm', -0.52 * strength, 0, 0, true);
 
       // Left arm braces back for balance
-      this.applyCharSpacePose('leftUpperArm', (0.35 - strike * 0.45) * strength, 0, leftRelax * 0.75, false);
+      this.applyCharSpacePose('leftUpperArm', (0.35 - strike * 0.45) * strength * armScale, 0, leftRelax * 0.85, false);
       this.applyCharSpacePose('leftLowerArm', -0.45 * strength, 0, 0, false);
 
       // Athletic split stance
-      this.applyCharSpacePose('leftUpperLeg', -0.24 * strength, 0, 0, false);
-      this.applyCharSpacePose('leftLowerLeg', 0.28 * strength, 0, 0, false);
-      this.applyCharSpacePose('rightUpperLeg', 0.22 * strength, 0, 0, true);
-      this.applyCharSpacePose('rightLowerLeg', 0.24 * strength, 0, 0, true);
+      this.applyCharSpacePose('leftUpperLeg', -0.24 * strength * slotTuning.strideLength, 0, 0, false);
+      this.applyCharSpacePose('leftLowerLeg', 0.28 * strength * kneeScale, 0, 0, false);
+      this.applyCharSpacePose('rightUpperLeg', 0.22 * strength * slotTuning.strideLength, 0, 0, true);
+      this.applyCharSpacePose('rightLowerLeg', 0.24 * strength * kneeScale, 0, 0, true);
       this.smoothLiveBoneQuaternions(clampedDt, 20);
       return;
     }
 
     // 'interact' (friendly wave + head tilt)
     const wave = Math.sin(t * 7.2);
-    this.applyCharSpacePose('spine', -0.04 * strength, -0.08 * strength, Math.sin(t * 2.4) * 0.05 * strength);
+    const armScale = slotTuning.armSwing;
+    const leanBias = THREE.MathUtils.degToRad(slotTuning.torsoLean);
+    this.applyCharSpacePose('spine', -0.04 * strength + leanBias * 0.5, -0.08 * strength, Math.sin(t * 2.4) * 0.05 * strength);
     this.applyCharSpacePose('head', -0.06 * headMult, Math.sin(t * 2.2) * 0.14 * headMult, 0.14 * headMult);
 
     // Raise right arm overhead and wag forearm
-    this.applyCharSpacePose('rightUpperArm', -0.35 * strength, 0, -rightRelax * 1.45 - 0.85, true);
-    this.applyCharSpacePose('rightLowerArm', -0.42 * strength, 0, wave * 0.48 * strength, true);
+    this.applyCharSpacePose('rightUpperArm', -0.35 * strength * armScale, 0, -rightRelax * 1.45 - 0.85, true);
+    this.applyCharSpacePose('rightLowerArm', -0.42 * strength, 0, wave * 0.48 * strength * armScale, true);
 
     // Relaxed left arm
     this.applyCharSpacePose('leftUpperArm', 0.06 * strength, 0, leftRelax, false);
